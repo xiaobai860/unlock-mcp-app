@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "UnlockGuardMcp"
+rootProject.name = "解锁守护"
 include(":app")
