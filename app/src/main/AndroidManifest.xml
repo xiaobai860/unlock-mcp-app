@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- 网络与保活 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- 前台服务（API 34+ 强制声明类型） -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- 保活：Doze 豁免 / 悬浮窗 / 自启 -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- 锁屏保底（DeviceAdmin 可选，方案以 Shizuku/无障碍为主） -->
+    <uses-permission android:name="android.permission.DISABLE_KEYGUARD" tools:ignore="ProtectedPermissions" />
+
+    <application
+        android:name=".MainApplication"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.UnlockGuard">
+
+        <activity
+            android:name=".ui.MainActivity"
+            android:exported="true"
+            android:theme="@style/Theme.UnlockGuard">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- 常驻 MCP 服务 -->
+        <service
+            android:name=".service.McpForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse"
+            tools:ignore="ForegroundServicePermission">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="本机 MCP 服务 + 屏幕解锁自动化" />
+        </service>
+
+        <!-- 解锁备通道：无障碍服务（能力焊死在 Keyguard 窗口 + 白名单） -->
+        <service
+            android:name=".accessibility.UnlockAccessibilityService"
+            android:exported="false"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:label="@string/accessibility_label">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
+        <!-- 开机 / 网络恢复自启 -->
+        <receiver
+            android:name=".service.BootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <!--
+            设备管理员（锁屏第二级兜底，需用户在系统激活页手动激活）。
+            exported 必须为 true：ACTION_ADD_DEVICE_ADMIN 激活流程与 DEVICE_ADMIN_ENABLED /
+            DEVICE_ADMIN_DISABLED 回调都由 system_server 发起，exported=false 会让系统调不到本组件。
+            安全边界由 BIND_DEVICE_ADMIN（signature 级）保证 —— 只有系统能绑定。
+            label / description 会显示在系统激活页上，用于向用户说明为何需要该权限。
+        -->
+        <receiver
+            android:name=".device.ScreenLockAdmin"
+            android:permission="android.permission.BIND_DEVICE_ADMIN"
+            android:exported="true"
+            android:label="@string/device_admin_label"
+            android:description="@string/device_admin_desc">
+            <meta-data
+                android:name="android.app.device_admin"
+                android:resource="@xml/device_admin" />
+            <intent-filter>
+                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+            </intent-filter>
+        </receiver>
+
+        <!--
+            Shizuku 客户端 provider：Shizuku 管理器通过该 ContentProvider（authority=<applicationId>.shizuku）
+            把 Binder 回传给本 App，Shizuku.pingBinder() / checkSelfPermission() 依赖它。
+            dev.rikka.shizuku:provider 的 AAR 仅声明了 API_V23 权限与 V3_SUPPORT meta-data，
+            未自带 <provider> 节点，故按 Shizuku 官方接入方式在此显式注册。
+        -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:enabled="true"
+            android:exported="true"
+            android:multiprocess="false"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL"
+            tools:ignore="ExportedContentProvider" />
+    </application>
+</manifest>

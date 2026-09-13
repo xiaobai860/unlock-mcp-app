@@ -1,0 +1,19 @@
+<resources>
+    <string name="app_name">解锁守护</string>
+    <string name="accessibility_label">解锁守护 · 锁屏 PIN 输入</string>
+    <string name="accessibility_desc">用于在本机锁屏（Keyguard）界面输入预存 PIN 以完成自动解锁，并识别指定白名单引导页。该能力仅限锁屏 PIN 键盘与白名单窗口，不会点击其它任何界面。</string>
+
+    <string name="notification_channel_id">mcp_service</string>
+    <string name="notification_channel_name">MCP 常驻服务</string>
+    <string name="notification_title">解锁守护服务运行中</string>
+    <string name="notification_text">MCP 已就绪，等待本机/局域网 AI 客户端调用</string>
+
+    <string name="device_admin_label">解锁守护 · 锁屏兜底</string>
+    <string name="device_admin_desc">在无障碍锁屏不可用时，用于兜底熄屏上锁。本应用只使用「强制锁屏」这一项设备管理能力，不会修改锁屏密码、不会清除数据、不会使用其它任何设备管理能力。</string>
+
+    <string name="perm_battery">电池无限制</string>
+    <string name="perm_doze">Doze 白名单</string>
+    <string name="perm_overlay">悬浮窗</string>
+    <string name="perm_accessibility">无障碍服务</string>
+    <string name="perm_shizuku">Shizuku 权限</string>
+</resources>
