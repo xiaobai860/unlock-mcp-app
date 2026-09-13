@@ -6,10 +6,19 @@
 
 ## 一、技术基线（与方案一致）
 - `minSdk = 34` / `targetSdk = 36` / `compileSdk = 37`
-- Gradle 9.7.1（Wrapper 内置）· AGP 9.3.0 · Kotlin 2.4.10 · Compose BOM 2026.08.00
-  - AGP 9 起**内置 Kotlin 支持**，因此不再 apply `org.jetbrains.kotlin.android`（顶层 `buildscript` 将 KGP 对齐到 2.4.10）
+- Gradle 9.7.1（Wrapper 内置，腾讯镜像）· AGP 9.3.0 · Kotlin 2.4.20 · Compose BOM 2026.09.00
+  - AGP 9 起**内置 Kotlin 支持**，因此不再 apply `org.jetbrains.kotlin.android`（顶层 `buildscript` 将 KGP 对齐到 2.4.20）
+  - **AGP 版本上限由 Android Studio 决定**：本机 Studio 为 `AI-261.26222.65`（2026.1 系列），
+    内置兼容上限即 **AGP 9.3.0**，Studio 会直接报
+    "The project is using an incompatible version ... Latest supported version is AGP 9.3.0"。
+    AGP 9.4.0（2026-09-03 发布，当前最新稳定版）需 Studio 2026.2（AI-262）及以上；
+    9.5.0 目前**只有 alpha05，尚无稳定版**。要升 AGP 请先升 Studio。
 - **字体：全部使用系统字体族，零字体资源依赖**（`FontFamily.SansSerif` / `FontFamily.Monospace`），无需手工放置任何 ttf，开箱即用
-- MCP 传输：Streamable HTTP（Ktor CIO）
+- MCP 传输：Streamable HTTP（Ktor CIO **3.x**）
+  - Ktor 3 与 2.x 为破坏性升级（底层改用 kotlinx-io）。本项目仅用
+    `embeddedServer(CIO)` / `routing` / `receiveText` / `respondText` 等稳定 API；
+    注意 Ktor 3 起 `EmbeddedServer` **不再实现 `ApplicationEngine`**，持有引擎需按
+    `EmbeddedServer<CIOApplicationEngine, CIOApplicationEngine.Configuration>` 具体泛型类型声明。
 - 解锁双通道：**Shizuku（主）→ 无障碍（备，Keyguard PIN 输入）**
   - 主通道的事件注入**跑在 Shizuku 的 UserService 进程内**（shell uid 2000 / root uid 0），
     因为 `INJECT_EVENTS` 是 `signature|privileged` 权限、按 uid 判定，应用进程无论怎样反射都拿不到；

@@ -24,5 +24,6 @@ keystore.properties
 
 # 调试产物（截图 / 会话日志 / ui dump 等，非源码）
 verify/
-/.workbuddy/memory/2026-09-13.md
 /gradle/gradle-daemon-jvm.properties
+/.workbuddy/
+/.codebuddy/

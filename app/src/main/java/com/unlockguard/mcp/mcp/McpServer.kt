@@ -8,6 +8,8 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.application.call
 import io.ktor.server.cio.CIO
+import io.ktor.server.cio.CIOApplicationEngine
+import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.request.receiveText
 import io.ktor.server.response.respondText
@@ -57,7 +59,8 @@ class McpServer(private val ctx: McpContext) {
 
     // 直接复用生产单例，切勿在此另建 Json 实例（否则易与 mcpJson 配置漂移）。
     private val json = mcpJson
-    private var engine: io.ktor.server.engine.ApplicationEngine? = null
+    // Ktor 3 起 EmbeddedServer 不再实现 ApplicationEngine，故按具体泛型类型持有。
+    private var engine: EmbeddedServer<CIOApplicationEngine, CIOApplicationEngine.Configuration>? = null
     private val sessions = ConcurrentHashMap<String, Long>()
 
     fun start() {

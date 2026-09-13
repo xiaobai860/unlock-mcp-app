@@ -91,15 +91,15 @@ kotlin {
 
 dependencies {
     // AndroidX 基础
-    implementation("androidx.core:core-ktx:1.15.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
-    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
-    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
-    implementation("androidx.activity:activity-compose:1.10.0")
-    implementation("androidx.datastore:datastore-preferences:1.1.4")
+    implementation("androidx.core:core-ktx:1.19.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.11.0")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.11.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.11.0")
+    implementation("androidx.activity:activity-compose:1.13.0")
+    implementation("androidx.datastore:datastore-preferences:1.2.1")
 
     // Compose（版本由 BOM 统一管理）
-    implementation(platform("androidx.compose:compose-bom:2026.08.00"))
+    implementation(platform("androidx.compose:compose-bom:2026.09.00"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")
@@ -109,21 +109,23 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
 
     // 导航
-    implementation("androidx.navigation:navigation-compose:2.8.5")
+    implementation("androidx.navigation:navigation-compose:2.10.1")
 
     // 序列化
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
 
     // MCP / HTTP Server（Streamable HTTP）
-    implementation("io.ktor:ktor-server-cio:2.3.12")
-    implementation("io.ktor:ktor-server-content-negotiation:2.3.12")
-    implementation("io.ktor:ktor-serialization-kotlinx-json:2.3.12")
-    implementation("io.ktor:ktor-server-call-logging:2.3.12")
-    implementation("io.ktor:ktor-server-default-headers:2.3.12")
+    // Ktor 3.x：与 2.x 相比为破坏性升级（改用 kotlinx-io），本项目仅用到
+    // embeddedServer(CIO)/routing/receiveText/respondText 等稳定 API，已验证兼容。
+    implementation("io.ktor:ktor-server-cio:3.5.2")
+    implementation("io.ktor:ktor-server-content-negotiation:3.5.2")
+    implementation("io.ktor:ktor-serialization-kotlinx-json:3.5.2")
+    implementation("io.ktor:ktor-server-call-logging:3.5.2")
+    implementation("io.ktor:ktor-server-default-headers:3.5.2")
 
-    // 安全存储（PIN / Token）
-    implementation("androidx.security:security-crypto:1.1.0-alpha06")
+    // 安全存储（PIN / Token）：1.1.0 已转正式版，脱离 alpha
+    implementation("androidx.security:security-crypto:1.1.0")
 
     // Shizuku（主解锁通道，shell 权限）
     // api：Shizuku.pingBinder 等运行时接口；provider：随 AAR 自动并入 manifest 的 ShizukuProvider
