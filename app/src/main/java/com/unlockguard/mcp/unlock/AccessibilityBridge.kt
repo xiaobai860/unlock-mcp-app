@@ -16,8 +16,9 @@ object AccessibilityBridge {
 
     fun isKeyguardShown(): Boolean = service?.isKeyguardShown() ?: false
 
-    /** 在锁屏 Keyguard 界面输入 PIN，返回是否完成点击（是否真解开由引擎用锁屏状态互校） */
-    fun inputPin(pin: String): Boolean = service?.inputPinOnKeyguard(pin) ?: false
+    /** 在锁屏 Keyguard 界面输入 PIN，返回结构化结果（是否真解开由引擎用锁屏状态互校） */
+    fun inputPin(pin: String): A11yUnlockResult =
+        service?.inputPinOnKeyguard(pin) ?: A11yUnlockResult.KeyguardNotFound
 
     /**
      * 锁屏：无障碍全局动作 `GLOBAL_ACTION_LOCK_SCREEN`。

@@ -16,7 +16,7 @@ class AccessibilityChannel {
 
     fun isEnabled(): Boolean = AccessibilityBridge.service != null
 
-    fun unlock(pin: String): Boolean = AccessibilityBridge.inputPin(pin)
+    fun unlock(pin: String): A11yUnlockResult = AccessibilityBridge.inputPin(pin)
 
     /** 锁屏。返回是否已下发，真实结果由引擎复核锁屏状态 */
     fun lock(): Boolean = AccessibilityBridge.lockScreen()

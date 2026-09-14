@@ -5,6 +5,7 @@
     android:accessibilityFeedbackType="feedbackGeneric"
     android:notificationTimeout="80"
     android:canRetrieveWindowContent="true"
+    android:canPerformGestures="true"
     android:accessibilityFlags="flagRetrieveInteractiveWindows|flagReportViewIds|flagIncludeNotImportantViews"
     android:packageNames="com.android.systemui"
     android:settingsActivity=".ui.MainActivity" />

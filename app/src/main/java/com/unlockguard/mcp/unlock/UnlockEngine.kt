@@ -103,6 +103,7 @@ class RealUnlockEngine(
             return UnlockResult.Failed("LOCKED_OUT", "连续失败锁定中，约 ${rateLimiter.lockedOutRemainingSec()}s 后恢复")
 
         val accessibilityReady = accessibility.isEnabled()
+        var a11yResult: A11yUnlockResult? = null
 
         // ---------- 主通道：Shizuku（未授权则直接跳到备通道） ----------
         if (shizuku.isAvailable()) {
@@ -113,26 +114,28 @@ class RealUnlockEngine(
                 return UnlockResult.Ok(UnlockChannel.SHIZUKU)
             }
 
-            // 降级前先判断：是"注入没生效"还是"PIN 不对"。
-            // 注入都没成功就说明主通道这条链路当前不通，交给无障碍，并不计入 PIN 失败。
+            // 注入都没成功 → 主通道链路不通，交无障碍确认；不计入 PIN 失败
             if (!report.injected) {
-                if (accessibilityReady && accessibility.unlock(pin) && !isScreenLocked()) {
+                a11yResult = if (accessibilityReady) accessibility.unlock(pin) else null
+                if (a11yResult is A11yUnlockResult.PinEntered && !isScreenLocked()) {
                     rateLimiter.resetFailures()
                     return UnlockResult.Ok(UnlockChannel.ACCESSIBILITY)
                 }
                 return UnlockResult.Failed(
                     "SHIZUKU_INJECT_FAILED",
-                    "Shizuku 事件注入未生效（${report.note.ifBlank { "后端 " + report.backend }}），已尝试无障碍备通道",
+                    "Shizuku 事件注入未生效（${report.note.ifBlank { "后端 " + report.backend }}），已尝试无障碍备通道${a11yHint(a11yResult)}",
                 )
             }
 
-            // 注入成功但没解开 → 大概率 PIN 不符，用备通道再确认一次后计入失败
-            if (accessibilityReady && accessibility.unlock(pin) && !isScreenLocked()) {
+            // 注入成功但没解开 → 用备通道再确认一次（结果用于失败结算）
+            a11yResult = if (accessibilityReady) accessibility.unlock(pin) else null
+            if (a11yResult is A11yUnlockResult.PinEntered && !isScreenLocked()) {
                 rateLimiter.resetFailures()
                 return UnlockResult.Ok(UnlockChannel.ACCESSIBILITY)
             }
         } else if (accessibilityReady) {
-            if (accessibility.unlock(pin) && !isScreenLocked()) {
+            a11yResult = accessibility.unlock(pin)
+            if (a11yResult is A11yUnlockResult.PinEntered && !isScreenLocked()) {
                 rateLimiter.resetFailures()
                 return UnlockResult.Ok(UnlockChannel.ACCESSIBILITY)
             }
@@ -143,13 +146,36 @@ class RealUnlockEngine(
             )
         }
 
-        // 失败：计入连续失败，达上限触发 LOCKED_OUT
+        // 失败结算：
+        // 仅当"确实把 PIN 输进去但屏仍锁"才视为 PIN 不符并计入连续失败；
+        // 无障碍侧的基础设施失败（点不亮屏 / 定位不到锁屏 / 缺数字键）与 PIN 对错无关，
+        // 不计入 —— 否则会把"ROM 限制"误判成"PIN 错误"，误导用户且可能误触发 LOCKED_OUT。
+        return when (a11yResult) {
+            is A11yUnlockResult.PinEntered, null -> failWithCount()
+            A11yUnlockResult.ScreenOffWakeFailed ->
+                UnlockResult.Failed("A11Y_WAKE_FAILED", "无障碍无法点亮屏幕（HyperOS 限制或电池优化拦截全局动作），请改用 Shizuku，或保持屏幕亮着再解锁")
+            A11yUnlockResult.KeyguardNotFound ->
+                UnlockResult.Failed("A11Y_KEYGUARD_NOT_FOUND", "无障碍已点亮屏但定位不到 PIN 锁屏（误拉起面板收不回，或 Keyguard 窗口被 ROM 隐藏），请改用 Shizuku")
+            is A11yUnlockResult.DigitMissing ->
+                UnlockResult.Failed("A11Y_DIGIT_MISSING", "PIN 键盘缺数字键 '${a11yResult.ch}'，可能是 ROM 节点降级，或 PIN 与锁屏密码不一致，请改用 Shizuku")
+        }
+    }
+
+    private fun failWithCount(): UnlockResult {
         val locked = rateLimiter.recordUnlockFailure()
         return if (locked) {
             UnlockResult.Failed("LOCKED_OUT", "连续失败达上限，已暂停自动解锁 10 分钟")
         } else {
             UnlockResult.Failed("PIN_MISMATCH", "PIN 输入后锁屏未解开，请核对 PIN 是否为锁屏密码")
         }
+    }
+
+    private fun a11yHint(r: A11yUnlockResult?): String = when (r) {
+        null -> "（无障碍不可用）"
+        A11yUnlockResult.PinEntered -> "（无障碍已输入 PIN 但屏仍锁）"
+        A11yUnlockResult.ScreenOffWakeFailed -> "（无障碍也无法点亮屏幕）"
+        A11yUnlockResult.KeyguardNotFound -> "（无障碍已亮屏但定位不到 PIN 锁屏）"
+        is A11yUnlockResult.DigitMissing -> "（无障碍缺数字键 '${r.ch}'）"
     }
 
     override suspend fun lock(): LockResult {
@@ -290,20 +316,21 @@ class RealUnlockEngine(
         // 备通道：仅在主通道没解开时启用
         if (!unlocked && accessibility.isEnabled()) {
             Log.i(TAG, "verify: 走无障碍备通道，输入 PIN")
-            val ok = accessibility.unlock(pin)
+            val r = accessibility.unlock(pin)
             delay(600)
             val nowLocked = isScreenLocked()
             unlocked = wasLocked && !nowLocked
-            Log.i(TAG, "verify: 无障碍 unlock 返回=$ok nowLocked=$nowLocked → unlocked=$unlocked")
+            Log.i(TAG, "verify: 无障碍 unlock 结果=$r nowLocked=$nowLocked → unlocked=$unlocked")
             steps += UnlockStep(
                 "无障碍备通道",
                 unlocked,
                 if (unlocked) {
                     "在锁屏界面完成 PIN 输入并解开"
-                } else if (ok) {
-                    "已下发 PIN 输入但锁屏仍未解开（PIN 可能不符，或自动提交式键盘未触发校验）"
-                } else {
-                    "无障碍未能在锁屏完成 PIN 输入（屏幕未点亮 / 无 PIN 键盘 / HyperOS 拦截全局动作），请改用 Shizuku 或保持屏幕亮着再验证"
+                } else when (r) {
+                    A11yUnlockResult.PinEntered -> "已下发 PIN 输入但锁屏仍未解开（PIN 可能不符，或自动提交式键盘未触发校验）"
+                    A11yUnlockResult.ScreenOffWakeFailed -> "无障碍无法点亮屏幕（HyperOS 限制）：PIN 输入被放弃，建议改用 Shizuku 或保持屏幕亮着再验证"
+                    A11yUnlockResult.KeyguardNotFound -> "已点亮屏但定位不到 PIN 锁屏（误拉起面板收不回 / Keyguard 被 ROM 隐藏），建议改用 Shizuku"
+                    is A11yUnlockResult.DigitMissing -> "PIN 键盘缺数字键 '${r.ch}'（ROM 节点降级，或 PIN 与锁屏密码不一致），建议改用 Shizuku"
                 },
             )
             if (unlocked) {

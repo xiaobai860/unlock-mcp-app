@@ -4,8 +4,11 @@ import android.accessibilityservice.AccessibilityService
 import android.content.Intent
 import android.os.PowerManager
 import android.util.Log
+import android.accessibilityservice.GestureDescription
+import android.graphics.Path
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import com.unlockguard.mcp.unlock.A11yUnlockResult
 import com.unlockguard.mcp.unlock.AccessibilityBridge
 
 /**
@@ -58,27 +61,45 @@ class UnlockAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * 点亮熄屏（无障碍**间接**唤醒）。
+     * 点亮熄屏。
      *
-     * 无障碍**没有**专门的唤醒 API：既不能注入 KEYCODE_WAKEUP，也没有 GLOBAL_ACTION_WAKE。
-     * 但 `performGlobalAction` 的几个"拉起系统面板"动作会顺带点亮屏幕：
-     *   - GLOBAL_ACTION_RECENTS（概览）
-     *   - GLOBAL_ACTION_NOTIFICATIONS（通知栏）
-     *   - GLOBAL_ACTION_QUICK_SETTINGS（快捷设置）
-     * 这些动作要求显示可见，于是系统把屏点亮 —— 这是自动化工具"用无障碍亮屏"的标准手法。
+     * 首选**合法系统 API**：`PowerManager.WakeLock` 带 `ACQUIRE_CAUSES_WAKEUP` 能直接点亮屏幕，
+     * 这比"用全局动作拉起系统面板间接触发"可靠得多 —— 后者是 hack，ROM（如 HyperOS）可拦截，
+     * 且依赖后台服务存活，Doze 下可能被延迟。
      *
-     * 注意：在**安全锁屏**上拉起的是"锁屏之上的面板"，需再收起才回到 PIN 锁屏；
-     * 部分 ROM（如 HyperOS）可能直接拦截这些全局动作，此时返回 false，由上层决定兜底。
+     * 兜底才用全局动作（RECENTS / NOTIFICATIONS / QUICK_SETTINGS）间接触发点亮：
+     * 它们是"要求显示可见故系统顺带亮屏"，并非唤醒契约。安全锁屏上拉起的是"锁屏之上的面板"，
+     * 需再收起才回到 PIN 锁屏；部分 ROM 会直接拦截这些全局动作。
      *
      * @return 屏幕是否已处于交互态（亮屏）。
      */
+    @Suppress("DEPRECATION")
     fun wakeScreen(): Boolean {
         val pm = getSystemService(POWER_SERVICE) as PowerManager
         if (pm.isInteractive) {
             Log.i(TAG_A11Y, "wakeScreen: 屏幕本来就是亮的，无需唤醒")
             return true
         }
-        Log.i(TAG_A11Y, "wakeScreen: 屏幕已熄，依次尝试全局动作点亮")
+        Log.i(TAG_A11Y, "wakeScreen: 屏幕已熄，先尝试 WakeLock(ACQUIRE_CAUSES_WAKEUP) 点亮")
+
+        // 首选：WakeLock 直接点亮屏。超时自动释放，避免常亮 wakelock 泄漏。
+        val wl = pm.newWakeLock(
+            PowerManager.ACQUIRE_CAUSES_WAKEUP or PowerManager.SCREEN_BRIGHT_WAKE_LOCK,
+            "UnlockGuard::A11yWake",
+        )
+        wl.acquire(3000L)
+        try {
+            runCatching { Thread.sleep(300) }
+            if (pm.isInteractive) {
+                Log.i(TAG_A11Y, "wakeScreen: WakeLock 已点亮屏幕")
+                return true
+            }
+        } finally {
+            if (wl.isHeld) wl.release()
+        }
+
+        // 兜底：全局动作间接触发（部分 ROM 会拦截，故放后面）
+        Log.i(TAG_A11Y, "wakeScreen: WakeLock 未点亮，回退到全局动作点亮")
         val orders = listOf(
             GLOBAL_ACTION_RECENTS,
             GLOBAL_ACTION_NOTIFICATIONS,
@@ -97,42 +118,78 @@ class UnlockAccessibilityService : AccessibilityService() {
                 return true
             }
         }
-        Log.w(TAG_A11Y, "wakeScreen: 所有全局动作均未能点亮屏幕（可能被 ROM 限制）")
+        Log.w(TAG_A11Y, "wakeScreen: 所有方式均未能点亮屏幕（可能被 ROM 限制）")
         return false
     }
 
     /**
      * 在锁屏 Keyguard 界面输入 PIN。
      *
-     * 关键约束（HyperOS 实测）：
-     *  - 本方法依赖 `rootInActiveWindow` 必须是**真正的 PIN 锁屏**（SystemUI 的 keyguard_pin_view）。
-     *    **屏幕熄灭时无障碍读不到任何 keyguard 控件**——uiautomator dump 仅剩 scrim（legacy_window_root /
-     *    scrim_*），无 key0~key9。故**必须先把屏点亮**才能触达数字键（`wakeScreen()` 完成）。
-     *  - 无障碍**没有**专用唤醒 API；点亮屏靠 `wakeScreen()` 用全局动作（RECENTS / NOTIFICATIONS /
-     *    QUICK_SETTINGS）拉起系统面板间接触发。HyperOS 上这些动作可能仍点不亮屏，此时直接放弃，
-     *    **绝不谎报成功**（解锁成败最终由引擎用 `KeyguardManager.isKeyguardLocked()` 互校）。
-     *  - 拉起的面板（通知栏 / 快捷设置）与 PIN 锁屏同属 `com.android.systemui`，所以要用 [isPinKeyguard]
-     *    甄别"是否含数字键"，甄别失败就收起面板、回到锁屏重试（最多 3 次）。
+     * 流程：
+     *  - 先 [wakeScreen] 点亮屏（WakeLock 直接亮屏，全局动作兜底）。屏熄时无障碍读不到任何 keyguard 控件，
+     *    故必须先把屏点亮才能触达数字键。
+     *  - 很多 ROM（HyperOS/MIUI/原生）亮屏后先停「上滑解锁」第一层，需先 [swipeUpToRevealPin] 上滑才露出
+     *    PIN 键盘；也可能误拉起通知/快捷面板。两者窗口都属 `com.android.systemui`，靠 [isPinKeyguard]
+     *    甄别"是否含数字键"区分：是 keyguard 无数字键 → 上滑；是面板 → 收起。最多重试 5 次。
+     *  - 任何一步失败都**绝不谎报成功**：返回结构化 [A11yUnlockResult]，解锁成败最终由引擎用
+     *    `KeyguardManager.isKeyguardLocked()` 互校。
      */
-    fun inputPinOnKeyguard(pin: String): Boolean {
+
+    /**
+     * 在「上滑解锁」第一层锁屏向上滑动，露出下方的 PIN 输入页。
+     *
+     * 用 `dispatchGesture`（需服务声明 `FLAG_CAN_PERFORM_GESTURES`，见 accessibility_service_config 的
+     * `canPerformGestures`）做合法全域手势，不依赖坐标点击、不触碰其它界面。
+     */
+    private fun swipeUpToRevealPin(): Boolean {
+        val metrics = resources.displayMetrics
+        val w = metrics.widthPixels.toFloat()
+        val h = metrics.heightPixels.toFloat()
+        val midX = w / 2f
+        val path = Path().apply {
+            moveTo(midX, h * 0.82f)
+            lineTo(midX, h * 0.18f)
+        }
+        val stroke = GestureDescription.StrokeDescription(path, 0, 250)
+        val gesture = GestureDescription.Builder().addStroke(stroke).build()
+        val dispatched = dispatchGesture(gesture, null, null)
+        Log.i(TAG_A11Y, "swipeUpToRevealPin: dispatchGesture 返回=$dispatched（屏 ${w.toInt()}x${h.toInt()}）")
+        return dispatched
+    }
+
+    fun inputPinOnKeyguard(pin: String): A11yUnlockResult {
         // 1) 确保屏幕亮着：锁屏 = 等效按电源键，屏会熄灭；不点亮则 keyguard 不可见、数字键点不到
         if (!wakeScreen()) {
             Log.e(TAG_A11Y, "inputPinOnKeyguard: 屏幕无法点亮（wakeScreen 失败，HyperOS 限制或 ROM 拦截全局动作），放弃 PIN 输入")
-            return false
+            return A11yUnlockResult.ScreenOffWakeFailed
         }
 
-        // 2) 甄别并定位真实 PIN 锁屏，排除误拉起的通知/快捷面板，最多重试 3 次
+        // 2) 定位真实 PIN 锁屏。很多 ROM（HyperOS/MIUI/原生）亮屏后先停「上滑解锁」第一层，需上滑才露出 PIN 键盘；
+        //    也可能误拉起通知/快捷面板。两种情况靠重试 + 针对性动作解决，最多 5 次。
         var root = rootInActiveWindow
         var attempt = 0
+        var swipedOnce = false
         while (root == null || !isPinKeyguard(root)) {
-            if (attempt >= 3) {
-                Log.e(TAG_A11Y, "inputPinOnKeyguard: 重试 3 次仍无法定位 PIN 锁屏（package=${root?.packageName}），放弃输入")
-                return false
+            if (attempt >= 5) {
+                Log.e(TAG_A11Y, "inputPinOnKeyguard: 重试 5 次仍无法定位 PIN 锁屏（package=${root?.packageName}），放弃输入")
+                return A11yUnlockResult.KeyguardNotFound
             }
-            Log.w(TAG_A11Y, "inputPinOnKeyguard: 第 ${attempt + 1} 次重试：当前非 PIN 锁屏（package=${root?.packageName}），收起面板回到锁屏")
-            performGlobalAction(GLOBAL_ACTION_BACK)
-            performGlobalAction(GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE)
-            runCatching { Thread.sleep(450) }
+            val onKeyguard = root?.packageName == "com.android.systemui"
+            Log.w(TAG_A11Y, "inputPinOnKeyguard: 第 ${attempt + 1} 次：非 PIN 锁屏（package=${root?.packageName}，onKeyguard=$onKeyguard），尝试进入 PIN 页")
+            if (onKeyguard && !swipedOnce) {
+                // systemui 窗口但无数字键 → 多半停在「上滑解锁」第一层，向上滑出 PIN 键盘
+                swipeUpToRevealPin()
+                swipedOnce = true
+                runCatching { Thread.sleep(650) }
+            } else if (onKeyguard) {
+                // 已上滑过仍是锁屏无键盘：多半 PIN 页渲染慢或被 ROM 拦截手势，等待后重试（不再重复上滑以免划走 PIN 页）
+                runCatching { Thread.sleep(500) }
+            } else {
+                // 误拉起通知/快捷面板（同样属 systemui 但不在锁屏页），收起回到锁屏
+                performGlobalAction(GLOBAL_ACTION_BACK)
+                performGlobalAction(GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE)
+                runCatching { Thread.sleep(450) }
+            }
             root = rootInActiveWindow
             attempt++
         }
@@ -141,7 +198,7 @@ class UnlockAccessibilityService : AccessibilityService() {
             val node = findDigit(root, ch)
             if (node == null) {
                 Log.e(TAG_A11Y, "inputPinOnKeyguard: 未找到数字键 '$ch' 节点（Keyguard 节点可能已被 ROM 简化降级）")
-                return false
+                return A11yUnlockResult.DigitMissing(ch)
             }
             Log.d(TAG_A11Y, "inputPinOnKeyguard: 点击数字键 '$ch'")
             node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
@@ -155,7 +212,7 @@ class UnlockAccessibilityService : AccessibilityService() {
             Log.d(TAG_A11Y, "inputPinOnKeyguard: 点击确认节点")
             confirm.performAction(AccessibilityNodeInfo.ACTION_CLICK)
         }
-        return true
+        return A11yUnlockResult.PinEntered
     }
 
     /** 当前窗口是否为 PIN 锁屏：包名须为 SystemUI，且含有数字键盘节点（key0~key9 或 content-desc 为 0~9） */
@@ -171,7 +228,9 @@ class UnlockAccessibilityService : AccessibilityService() {
                 return@dfs true
             }
             val cd = node.contentDescription?.toString() ?: ""
-            cd in "0123456789"
+            // 注意：不能用 `cd in "0123456789"`（等价 "0123456789".contains(cd)，
+            // 空串会被判定为包含，导致无 contentDescription 的节点也命中 → 甄别恒为真、失效）。
+            cd.length == 1 && cd[0] in '0'..'9'
         } != null
     }
 
