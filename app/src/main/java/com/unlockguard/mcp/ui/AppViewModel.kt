@@ -199,7 +199,27 @@ class AppViewModel(private val graph: AppGraph, app: Application) : AndroidViewM
 
     fun regenerateToken(): String = graph.regenerateToken().also { graph.refreshAddresses() }
 
-    fun copyConfig(): String = addresses.value.joinToString("\n")
+    /**
+     * 生成可直接粘贴到 AI 客户端（Cursor / Claude Desktop 等）MCP 配置里的 JSON。
+     * 优先用局域网地址（开启「局域网连接」后才有），否则退回 127.0.0.1（仅本机可连）。
+     */
+    fun copyConfig(): String {
+        val base = addresses.value.firstOrNull { !it.contains("127.0.0.1") }
+            ?: addresses.value.firstOrNull()
+            ?: "http://127.0.0.1:${graph.port}/mcp"
+        return buildString {
+            append("{\n")
+            append("  \"mcpServers\": {\n")
+            append("    \"unlock-guard\": {\n")
+            append("      \"url\": \"$base\",\n")
+            append("      \"headers\": {\n")
+            append("        \"Authorization\": \"Bearer ${token.value}\"\n")
+            append("      }\n")
+            append("    }\n")
+            append("  }\n")
+            append("}")
+        }
+    }
 
     fun setPin(pin: String) = graph.pinStore.setPin(pin)
 

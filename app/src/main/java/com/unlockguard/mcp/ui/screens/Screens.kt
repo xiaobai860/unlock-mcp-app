@@ -51,6 +51,8 @@ import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Wifi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -60,6 +62,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalContext
+import com.unlockguard.mcp.ui.overlay.OverlayBallManager
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
@@ -265,7 +269,7 @@ fun AppRoot(vm: AppViewModel) {
                         hasPin = vm.hasPin(),
                         fabOn = fabOn,
                         fabGranted = vm.canDrawOverlay(),
-                        onLan = { vm.toggleLan(it); say(if (it) "已开启局域网监听" else "已关闭局域网监听") },
+                        onLan = { vm.toggleLan(it); say(if (it) "已开启局域网连接" else "已关闭局域网连接") },
                         onPort = { raw ->
                             val applied = vm.setPort(raw)
                             if (applied != null) say("端口已更新为 $applied")
@@ -277,6 +281,7 @@ fun AppRoot(vm: AppViewModel) {
                         },
                         onEditPin = { pinValue = ""; pinDialog = true },
                         onFab = { on -> say(vm.setFab(on)) },
+                        onCopyConfig = { copy(vm.copyConfig(), "MCP 连接配置已复制，可直接粘进 AI 客户端的 MCP 配置") },
                     )
                 }
                 // 悬浮球已改为系统级悬浮窗（见 OverlayBallManager）：
@@ -1020,6 +1025,39 @@ private fun LogScreen(logs: List<AuditLog.Entry>, onExport: () -> Unit) {
 /* 5. 设置                                                                */
 /* ===================================================================== */
 
+/** 带数值显示的滑块行（用于悬浮球大小 / 透明度 / 贴边露出调节） */
+@Composable
+private fun SliderRow(
+    title: String,
+    valueText: String,
+    value: Float,
+    valueRange: ClosedFloatingPointRange<Float>,
+    onValueChange: (Float) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier.fillMaxWidth()) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(title, style = AppText.body, color = semantic.text2)
+            Text(valueText, style = AppText.mono, color = semantic.text2)
+        }
+        Spacer(Modifier.height(Spacing.s2))
+        Slider(
+            value = value,
+            onValueChange = onValueChange,
+            valueRange = valueRange,
+            colors = SliderDefaults.colors(
+                thumbColor = semantic.brand,
+                activeTrackColor = semantic.brand,
+                inactiveTrackColor = semantic.border,
+            ),
+        )
+    }
+}
+
 @Composable
 private fun SettingsScreen(
     ui: PhoneUiState,
@@ -1035,6 +1073,7 @@ private fun SettingsScreen(
     onRegenerate: () -> Unit,
     onEditPin: () -> Unit,
     onFab: (Boolean) -> Unit,
+    onCopyConfig: () -> Unit,
 ) {
     var portText by remember(ui.port) { mutableStateOf(ui.port.toString()) }
     val masked = if (token.length > 8) token.take(6) + "••••••••••" + token.takeLast(4) else token
@@ -1060,8 +1099,8 @@ private fun SettingsScreen(
                 )
             }
             FieldRow(
-                title = "局域网监听",
-                desc = "默认关 · 仅 127.0.0.1",
+                title = "局域网连接",
+                desc = "关闭时仅本机可连 · 打开后同 Wi-Fi 下的电脑也能连",
                 last = !lanOn,
             ) {
                 AppSwitch(checked = lanOn, onCheckedChange = onLan)
@@ -1069,7 +1108,7 @@ private fun SettingsScreen(
             if (lanOn) {
                 Spacer(Modifier.height(Spacing.s3))
                 NoteBox(
-                    text = "明文风险：开启后同网段可嗅探 Token。建议局域网监听保持关闭，或仅在可信网络临时开启。",
+                    text = "打开后，同一 Wi-Fi 下的电脑 / AI 工具也能连上本服务来远程解锁。连接是明文 HTTP，同网络的人可能看到 Token，建议只在信任的 Wi-Fi 下临时开启。",
                     icon = Icons.Outlined.Warning,
                 )
             }
@@ -1088,6 +1127,19 @@ private fun SettingsScreen(
                     )
                 }
             }
+            Spacer(Modifier.height(Spacing.s3))
+            AppButton(
+                text = "复制 MCP 连接配置",
+                onClick = onCopyConfig,
+                variant = BtnVariant.Soft,
+                fullWidth = true,
+                leadingIcon = Icons.Outlined.ContentCopy,
+            )
+            Spacer(Modifier.height(Spacing.s2))
+            NoteBox(
+                text = "复制后把这段 JSON 直接粘进 Cursor / Claude Desktop 等客户端的 MCP 配置即可连上，无需手动拼地址与 Token。",
+                icon = Icons.Outlined.Info,
+            )
             Spacer(Modifier.height(Spacing.s3))
             AppButton(
                 text = "重新生成 Token",
@@ -1130,10 +1182,47 @@ private fun SettingsScreen(
             ) {
                 AppSwitch(checked = fabOn, onCheckedChange = onFab)
             }
+            Spacer(Modifier.height(Spacing.s3))
+            val ctx = LocalContext.current
+            val sizeState = remember { mutableStateOf(OverlayBallManager.getSizeDp(ctx)) }
+            val alphaState = remember { mutableStateOf(OverlayBallManager.getAlpha(ctx)) }
+            val peekState = remember { mutableStateOf(OverlayBallManager.getPeekDp(ctx)) }
+            SliderRow(
+                title = "大小",
+                valueText = "${sizeState.value.toInt()} dp",
+                value = sizeState.value,
+                valueRange = 40f..96f,
+                onValueChange = {
+                    sizeState.value = it
+                    OverlayBallManager.setSizeDp(ctx, it)
+                },
+            )
+            Spacer(Modifier.height(Spacing.s2))
+            SliderRow(
+                title = "透明度",
+                valueText = "${(alphaState.value * 100).toInt()}%",
+                value = alphaState.value,
+                valueRange = 0.3f..1f,
+                onValueChange = {
+                    alphaState.value = it
+                    OverlayBallManager.setAlpha(ctx, it)
+                },
+            )
+            Spacer(Modifier.height(Spacing.s2))
+            SliderRow(
+                title = "贴边露出",
+                valueText = "${peekState.value.toInt()} dp",
+                value = peekState.value,
+                valueRange = 0f..48f,
+                onValueChange = {
+                    peekState.value = it
+                    OverlayBallManager.setPeekDp(ctx, it)
+                },
+            )
             Spacer(Modifier.height(Spacing.s2))
             NoteBox(
                 text = if (fabGranted) {
-                    "悬浮球是系统级窗口，由守护服务托管：切到桌面、锁屏再唤醒都还在；服务停止时会一并消失。"
+                    "悬浮球是系统级窗口，由守护服务托管：切到桌面、锁屏再唤醒都还在；拖动松手会自动贴到屏幕一侧，只露出你设定的「贴边露出」宽度。服务停止时会一并消失。"
                 } else {
                     "尚未获得「显示在其他应用上层」权限。打开开关会跳转系统授权页，授权后回来再打开一次即可。"
                 },
