@@ -22,6 +22,10 @@ object ErrorCodes {
     const val TOKEN_INVALID = "TOKEN_INVALID"
     const val RATE_LIMITED = "RATE_LIMITED"
     const val INVALID_PARAMS = "INVALID_PARAMS"
+    /** 命令未能执行（Shizuku 未授权 / UserService 未就绪 / 超时 / 进程异常） */
+    const val COMMAND_FAILED = "COMMAND_FAILED"
+    /** 命令被安全护栏拒绝（破坏性 / 不可逆 / 自断通道操作） */
+    const val COMMAND_BLOCKED = "COMMAND_BLOCKED"
 }
 
 /** MCP 工具统一返回结构：{ ok, data?, error? } */

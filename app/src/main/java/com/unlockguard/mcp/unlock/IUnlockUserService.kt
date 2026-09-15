@@ -42,6 +42,15 @@ interface IUnlockUserService {
     /** 逐位输入数字 PIN（KEYCODE_0..9），位间留 gapMs 给锁屏键盘响应 */
     fun injectDigits(digits: String, gapMs: Int): Boolean
 
+    /**
+     * 以本进程（shell=2000 / root=0）身份执行一条 shell 命令。
+     *
+     * @return JSON 字符串 `{ exitCode, stdout, stderr, timedOut, error }`。
+     *         输出会在服务端截断，避免超出 Binder 事务约 1MB 的上限
+     *         （`dumpsys` 之类大输出命令很容易撑爆，必须截断）。
+     */
+    fun exec(cmd: String, timeoutSec: Int): String
+
     /** 结束本 UserService 进程 */
     fun exit()
 
@@ -92,6 +101,13 @@ interface IUnlockUserService {
                     return true
                 }
 
+                TR_EXEC -> {
+                    data.enforceInterface(DESCRIPTOR)
+                    val r = exec(data.readString().orEmpty(), data.readInt())
+                    reply?.apply { writeNoException(); writeString(r) }
+                    return true
+                }
+
                 TR_EXIT -> {
                     data.enforceInterface(DESCRIPTOR)
                     exit()
@@ -135,6 +151,10 @@ interface IUnlockUserService {
             it.writeString(digits); it.writeInt(gapMs)
         }
 
+        override fun exec(cmd: String, timeoutSec: Int): String = callString(TR_EXEC) {
+            it.writeString(cmd); it.writeInt(timeoutSec)
+        }
+
         override fun exit() {
             val data = Parcel.obtain()
             runCatching {
@@ -161,6 +181,22 @@ interface IUnlockUserService {
                 }
             }.getOrDefault(false)
 
+        /** 带参数的字符串调用：写入内容由 [write] 决定 */
+        private inline fun callString(code: Int, write: (Parcel) -> Unit): String = runCatching {
+            val data = Parcel.obtain()
+            val reply = Parcel.obtain()
+            try {
+                data.writeInterfaceToken(DESCRIPTOR)
+                write(data)
+                remote.transact(code, data, reply, 0)
+                reply.readException()
+                reply.readString().orEmpty()
+            } finally {
+                data.recycle()
+                reply.recycle()
+            }
+        }.getOrDefault("")
+
         private fun callString(code: Int, argCount: Int): String = runCatching {
             val data = Parcel.obtain()
             val reply = Parcel.obtain()
@@ -185,3 +221,4 @@ private const val TR_SWIPE = IBinder.FIRST_CALL_TRANSACTION + 2
 private const val TR_KEY = IBinder.FIRST_CALL_TRANSACTION + 3
 private const val TR_DIGITS = IBinder.FIRST_CALL_TRANSACTION + 4
 private const val TR_EXIT = IBinder.FIRST_CALL_TRANSACTION + 5
+private const val TR_EXEC = IBinder.FIRST_CALL_TRANSACTION + 6

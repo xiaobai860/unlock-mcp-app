@@ -57,6 +57,15 @@ interface UnlockEngine {
 
     /** 解锁验证：可选先锁屏，然后实际走一遍完整解锁并逐步回报 */
     suspend fun verify(lockFirst: Boolean): VerifyReport
+
+    /**
+     * 以 Shizuku（shell/root）身份执行一条 shell 命令，等价于 `adb shell <cmd>`。
+     * 未授权 Shizuku 时返回 `executed=false`，**不抛异常**（由上层转成错误码）。
+     */
+    suspend fun runShell(cmd: String, timeoutMs: Int): ShellResult
+
+    /** 调节屏幕亮度（0–255）。未授权 Shizuku 时返回 `executed=false` */
+    suspend fun setBrightness(level: Int, auto: Boolean): ShellResult
 }
 
 /**
@@ -94,6 +103,13 @@ class RealUnlockEngine(
         val pm = context.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
         return pm?.isInteractive ?: true
     }
+
+    // 走 Shizuku 主通道：命令在 shizuku_server 特权进程执行，非本应用进程
+    override suspend fun runShell(cmd: String, timeoutMs: Int): ShellResult =
+        shizuku.exec(cmd, timeoutMs)
+
+    override suspend fun setBrightness(level: Int, auto: Boolean): ShellResult =
+        shizuku.setBrightness(level, auto)
 
     override suspend fun tryUnlock(): UnlockResult {
         val pin = pinStore.getPin()

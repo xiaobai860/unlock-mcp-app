@@ -7,6 +7,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.int
+import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.putJsonObject
 import com.unlockguard.mcp.unlock.LockResult
@@ -27,6 +28,8 @@ object Tools {
         "set_screen_timeout" to setOf("screen_off_ms", "lock_after_ms"),
         "restore_settings" to emptySet(),
         "grant_debug_auth" to emptySet(),
+        "set_screen_brightness" to setOf("level", "auto"),
+        "run_adb_command" to setOf("command", "timeout_ms"),
     )
 
     suspend fun dispatch(ctx: McpContext, name: String, args: JsonObject, sourceIp: String): ToolEnvelope {
@@ -65,6 +68,16 @@ object Tools {
             }
             "restore_settings" -> restoreSettings(ctx)
             "grant_debug_auth" -> grantDebugAuth(ctx)
+            "set_screen_brightness" -> {
+                val level = args["level"]?.jsonPrimitive?.int
+                val auto = args["auto"]?.jsonPrimitive?.boolean ?: false
+                setScreenBrightness(ctx, level, auto, sourceIp)
+            }
+            "run_adb_command" -> {
+                val cmd = args["command"]?.jsonPrimitive?.content
+                val timeout = args["timeout_ms"]?.jsonPrimitive?.int ?: 15_000
+                runAdbCommand(ctx, cmd, timeout, sourceIp)
+            }
             else -> ToolEnvelope(false, null, McpError("UNKNOWN_TOOL", "未知工具: $name", "检查客户端工具名"))
         }
     }
@@ -207,5 +220,139 @@ object Tools {
         }
         ctx.audit.record("local", "grant_debug_auth", "-", true, null)
         return ToolEnvelope(true, data)
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Shizuku 专属能力：亮度调节 / adb 命令                                */
+    /* ------------------------------------------------------------------ */
+
+    /**
+     * 屏幕亮度调节。
+     *
+     * 必须依赖 Shizuku：写 `settings system screen_brightness` 需要 shell 级权限，
+     * 应用自身没有 WRITE_SETTINGS 时改不动，只能借 Shizuku 的特权进程代劳。
+     */
+    private suspend fun setScreenBrightness(
+        ctx: McpContext,
+        level: Int?,
+        auto: Boolean,
+        sourceIp: String,
+    ): ToolEnvelope {
+        if (level == null || level !in 0..255) {
+            ctx.audit.record(sourceIp, "set_screen_brightness", "level=$level", false, ErrorCodes.INVALID_PARAMS)
+            return ToolEnvelope(false, null, McpError(
+                ErrorCodes.INVALID_PARAMS,
+                "level 必填且必须在 0–255",
+                "传入值 $level 无效（Android 原生亮度值为 0–255：0 最暗、255 最亮）",
+            ))
+        }
+        if (!ctx.unlockEngine.isShizukuAvailable()) {
+            return shizukuRequired(ctx, "set_screen_brightness", "level=$level", sourceIp)
+        }
+
+        val r = ctx.unlockEngine.setBrightness(level, auto)
+        ctx.audit.record(
+            sourceIp, "set_screen_brightness", "level=$level auto=$auto", r.succeeded,
+            if (r.succeeded) null else ErrorCodes.COMMAND_FAILED,
+        )
+        return if (r.succeeded) {
+            ToolEnvelope(true, buildJsonObject {
+                put("level", JsonPrimitive(level))
+                put("auto", JsonPrimitive(auto))
+            })
+        } else {
+            ToolEnvelope(false, null, McpError(
+                ErrorCodes.COMMAND_FAILED,
+                "亮度调节失败：${r.note.ifBlank { r.stderr }}",
+                r.stderr.ifBlank { "确认 Shizuku 已授权且服务在运行" },
+            ))
+        }
+    }
+
+    /**
+     * 以 adb shell 权限执行一条命令。
+     *
+     * 这是**高危能力**（等同于把 shell 交出去），故有三重约束：
+     * 1. 必须 Shizuku 已授权（唯一执行通道，未授权直接拒绝）；
+     * 2. 强制超时（1000–60000ms），超时强杀子进程；
+     * 3. 输出在服务端截断（约 8000 字符），避免 Binder 事务溢出。
+     *
+     * 上报口径：工具自身 ok 表示「命令有没有跑起来」；
+     * 命令**自己的成败**看 `data.succeeded` / `exit_code` —— 二者分开，不谎报。
+     */
+    private suspend fun runAdbCommand(
+        ctx: McpContext,
+        command: String?,
+        timeoutMs: Int,
+        sourceIp: String,
+    ): ToolEnvelope {
+        if (command.isNullOrBlank()) {
+            ctx.audit.record(sourceIp, "run_adb_command", "empty", false, ErrorCodes.INVALID_PARAMS)
+            return ToolEnvelope(false, null, McpError(
+                ErrorCodes.INVALID_PARAMS,
+                "command 不能为空",
+                "传入要执行的 shell 命令（无需 adb shell 前缀）",
+            ))
+        }
+        if (timeoutMs !in 1_000..60_000) {
+            ctx.audit.record(sourceIp, "run_adb_command", "timeout=$timeoutMs", false, ErrorCodes.INVALID_PARAMS)
+            return ToolEnvelope(false, null, McpError(
+                ErrorCodes.INVALID_PARAMS,
+                "timeout_ms 必须在 1000–60000",
+                "传入值 $timeoutMs 无效",
+            ))
+        }
+        if (!ctx.unlockEngine.isShizukuAvailable()) {
+            return shizukuRequired(ctx, "run_adb_command", command.take(80), sourceIp)
+        }
+
+        val r = ctx.unlockEngine.runShell(command, timeoutMs)
+        // 被护栏拦截 / 执行失败 / 命令返回非 0，三种情况分别留痕，便于事后追溯
+        val failCode = when {
+            r.blocked -> ErrorCodes.COMMAND_BLOCKED
+            r.succeeded -> null
+            else -> ErrorCodes.COMMAND_FAILED
+        }
+        // 审计里截断命令正文，避免超长命令污染日志
+        ctx.audit.record(
+            sourceIp, "run_adb_command", "exit=${r.exitCode} ${command.take(100)}", r.succeeded, failCode,
+        )
+        return when {
+            r.blocked -> ToolEnvelope(false, null, McpError(
+                ErrorCodes.COMMAND_BLOCKED,
+                "命令被安全护栏拒绝：${r.note}",
+                "本工具禁止执行不可逆的破坏性操作（恢复出厂 / 关机 / 删除分区根目录 / 写磁盘分区 / 提权 / 关闭 ADB 调试 / 卸载本应用）",
+            ))
+            !r.executed -> ToolEnvelope(false, null, McpError(
+                ErrorCodes.COMMAND_FAILED,
+                "命令未能执行：${r.note.ifBlank { r.stderr }}",
+                "确认 Shizuku 已授权、服务在运行，或减少命令耗时后重试",
+            ))
+            else -> ToolEnvelope(true, buildJsonObject {
+                put("exit_code", JsonPrimitive(r.exitCode))
+                put("stdout", JsonPrimitive(r.stdout))
+                put("stderr", JsonPrimitive(r.stderr))
+                put("timed_out", JsonPrimitive(r.timedOut))
+                put("succeeded", JsonPrimitive(r.succeeded))
+            })
+        }
+    }
+
+    /**
+     * Shizuku 是上述两个工具的**唯一**执行通道：未授权时明确拒绝，
+     * 不降级、不假装成功（与项目「如实上报」一致）。
+     */
+    private suspend fun shizukuRequired(
+        ctx: McpContext,
+        tool: String,
+        detail: String,
+        sourceIp: String,
+    ): ToolEnvelope {
+        ctx.audit.record(sourceIp, tool, detail, false, ErrorCodes.SHIZUKU_UNAVAILABLE)
+        return ToolEnvelope(false, null, McpError(
+            ErrorCodes.SHIZUKU_UNAVAILABLE,
+            "该工具需要 Shizuku 授权才能执行",
+            "请在 Shizuku 中授权本应用（或开启无线调试后重启 Shizuku），再重试",
+        ))
     }
 }
