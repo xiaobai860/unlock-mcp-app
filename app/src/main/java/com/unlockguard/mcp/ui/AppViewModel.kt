@@ -29,7 +29,7 @@ data class PhoneUiState(
     val locked: Boolean = false,
     val shizuku: Boolean = false,
     val accessibility: Boolean = false,
-    /** 设备管理员是否已激活（锁屏第二级兜底） */
+    /** 设备管理员是否已激活（锁屏最后一级兜底：会让生物识别失效） */
     val deviceAdmin: Boolean = false,
     /** 是否持有 WRITE_SECURE_SETTINGS（无障碍重启免手动开启的前提） */
     val wssGranted: Boolean = false,

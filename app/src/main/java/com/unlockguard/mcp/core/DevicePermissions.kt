@@ -67,7 +67,7 @@ class DevicePermissions(private val ctx: Context) {
         ctx.checkSelfPermission(android.Manifest.permission.WRITE_SECURE_SETTINGS) == PackageManager.PERMISSION_GRANTED
     }.getOrDefault(false)
 
-    /** 设备管理员是否已激活（锁屏第二级兜底） */
+    /** 设备管理员是否已激活（锁屏最后一级兜底：会让生物识别失效） */
     fun isDeviceAdminActive(): Boolean = ScreenLockAdmin.isActive(ctx)
 
     /** 无障碍服务是否在系统已启用列表中 */
@@ -111,7 +111,7 @@ class DevicePermissions(private val ctx: Context) {
             ),
             PermissionRow(
                 "无障碍服务",
-                if (accessibilityOn) null else "未开启：锁屏首选通道与解锁备通道均不可用",
+                if (accessibilityOn) null else "未开启：锁屏与解锁的备通道均不可用",
                 if (accessibilityOn) PermStatus.Granted else PermStatus.Missing, PermAction.Accessibility,
             ),
             PermissionRow(

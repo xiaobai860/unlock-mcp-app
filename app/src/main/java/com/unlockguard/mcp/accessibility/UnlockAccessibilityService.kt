@@ -47,6 +47,7 @@ class UnlockAccessibilityService : AccessibilityService() {
      * 这是 Google 官方推荐的第三方锁屏方式：效果等效于按电源键，
      * **指纹 / 人脸 / Smart Lock 照常可用**；而 DeviceAdmin 的 `lockNow()` 会强制进入
      * PRIMARY_BOUNCER，生物识别失效必须输 PIN —— 这正是本通道排在设备管理员之前的原因。
+     * （Shizuku 的 KEYCODE_SLEEP 与之等效、同样保留生物识别，故本项目锁屏以 Shizuku 优先、本通道次之。）
      *
      * 注：`performGlobalAction` 是直接向系统服务下发全局动作，**不受本服务
      * `packageNames` 事件过滤的约束**，因此在任何界面都能生效。

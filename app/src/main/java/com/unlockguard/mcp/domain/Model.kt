@@ -13,7 +13,11 @@ enum class UnlockChannel { SHIZUKU, ACCESSIBILITY, NONE }
  *   **生物识别失效，只能输 PIN**。
  *
  * 正因如此，Android 9 才新增无障碍全局动作——Google 的目的是让第三方锁屏应用摆脱
- * DeviceAdmin 这个副作用，官方推荐优先用无障碍。设备管理员在本项目里只作兜底。
+ * DeviceAdmin 这个副作用，官方推荐优先用无障碍。
+ *
+ * 本项目锁屏降序（与解锁链路保持一致，均 Shizuku 主 → 无障碍备）：
+ * `SHIZUKU` → `ACCESSIBILITY` → `DEVICE_ADMIN`。
+ * 前两者都保留生物识别，可互换先后；设备管理员因会让生物识别失效，固定排在最后兜底。
  */
 enum class LockChannel(val biometricPreserved: Boolean) {
     ACCESSIBILITY(true),

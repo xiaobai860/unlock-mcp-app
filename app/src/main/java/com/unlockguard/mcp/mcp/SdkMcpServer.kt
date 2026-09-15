@@ -93,7 +93,7 @@ class SdkMcpServer(private val ctx: McpContext) {
         ),
         ToolSpec(
             "lock_phone",
-            "立即锁屏。按 无障碍 GLOBAL_ACTION_LOCK_SCREEN(首选，保留指纹) → 设备管理员 lockNow(保底，生物识别失效) → Shizuku 逐级降级。" +
+            "立即锁屏。按 Shizuku(注入 SLEEP，保留指纹) → 无障碍 GLOBAL_ACTION_LOCK_SCREEN(保留指纹) → 设备管理员 lockNow(兜底，生物识别失效、只能输 PIN) 逐级降级。" +
                 "返回实际通道 channel_used 与 biometric_preserved(生物识别是否仍可用，客户端据此决定后续等指纹还是输 PIN)。有副作用。",
         ),
         ToolSpec(

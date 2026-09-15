@@ -22,9 +22,9 @@ import android.content.Intent
  * 3. 申请得越少，用户面对的系统激活页越不吓人。
  *
  * ## 在锁屏链路里的位置
- * 它是**第二级兜底**，排在无障碍之后：`lockNow()` 会把设备强制推进 PRIMARY_BOUNCER，
- * **指纹/人脸失效、只能输 PIN**。只有当无障碍被 ROM 限制时才轮到它。
- * 见 `UnlockEngine.lock()`。
+ * 它是**最后一级兜底**，排在 Shizuku 与无障碍之后：`lockNow()` 会把设备强制推进
+ * PRIMARY_BOUNCER，**指纹/人脸失效、只能输 PIN**；而前两者等效按电源键、保留生物识别。
+ * 只有 Shizuku 与无障碍都不可用时才轮到它。见 `UnlockEngine.lock()`。
  */
 class ScreenLockAdmin : DeviceAdminReceiver() {
 

@@ -788,7 +788,7 @@ private fun StatusScreen(
             }
             FieldRow(
                 title = "无障碍服务",
-                desc = "锁屏首选（保留指纹）+ 解锁备通道",
+                desc = "锁屏第二级（保留指纹）+ 解锁备通道",
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,

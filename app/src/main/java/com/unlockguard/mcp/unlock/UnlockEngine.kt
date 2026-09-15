@@ -184,7 +184,19 @@ class RealUnlockEngine(
             return LockResult.Ok(LockChannel.NONE, alreadyLocked = true, biometricPreserved = true)
         }
 
-        // 1) 无障碍锁屏（首选）：GLOBAL_ACTION_LOCK_SCREEN 等效按电源键，**保留指纹/人脸/Smart Lock**。
+        // 与解锁链路一致：Shizuku 主通道 → 无障碍备通道 → 设备管理员兜底。
+        // 前两者都等效按电源键、保留生物识别，故优先；设备管理员会让生物识别失效，排最后。
+
+        // 1) Shizuku 注入 SLEEP（等效按电源键，**保留指纹/人脸/Smart Lock**）
+        if (shizuku.isAvailable()) {
+            shizuku.lock()
+            delay(LOCK_VERIFY_DELAY_MS)
+            if (isScreenLocked()) {
+                return LockResult.Ok(LockChannel.SHIZUKU, biometricPreserved = true)
+            }
+        }
+
+        // 2) 无障碍锁屏：GLOBAL_ACTION_LOCK_SCREEN 同样等效按电源键，保留生物识别
         if (accessibility.isEnabled()) {
             accessibility.lock()
             delay(LOCK_VERIFY_DELAY_MS)
@@ -193,20 +205,12 @@ class RealUnlockEngine(
             }
         }
 
-        // 2) 设备管理员兜底：lockNow() 强制进入 PRIMARY_BOUNCER，**生物识别失效、只能输 PIN**。
+        // 3) 设备管理员兜底（仅当前两级都不可用）：lockNow() 强制进入 PRIMARY_BOUNCER，
+        //    **生物识别失效、只能输 PIN**
         if (ScreenLockAdmin.lockNow(context)) {
             delay(LOCK_VERIFY_DELAY_MS)
             if (isScreenLocked()) {
                 return LockResult.Ok(LockChannel.DEVICE_ADMIN, biometricPreserved = false)
-            }
-        }
-
-        // 3) Shizuku 注入 SLEEP（等效电源键，保留生物识别）
-        if (shizuku.isAvailable()) {
-            shizuku.lock()
-            delay(LOCK_VERIFY_DELAY_MS)
-            if (isScreenLocked()) {
-                return LockResult.Ok(LockChannel.SHIZUKU, biometricPreserved = true)
             }
         }
 
