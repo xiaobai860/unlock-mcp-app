@@ -56,6 +56,7 @@ class AppViewModel(private val graph: AppGraph, app: Application) : AndroidViewM
     val token: StateFlow<String> = graph.token
     val addresses: StateFlow<List<String>> = graph.addresses
     val auditRecent: StateFlow<List<AuditLog.Entry>> = graph.audit.recent
+    val logRetentionDays: StateFlow<Int> = graph.audit.retentionDays
     val fabOn: StateFlow<Boolean> = graph.fabOn
 
     private val _verify = MutableStateFlow(VerifyUi())
@@ -242,6 +243,16 @@ class AppViewModel(private val graph: AppGraph, app: Application) : AndroidViewM
     /* ---------------- 审计 ---------------- */
 
     fun exportAuditCsv(): java.io.File = graph.audit.exportCsv()
+
+    /** 修改日志默认保存天数（持久化，超期记录立即清理） */
+    fun setLogRetentionDays(days: Int) {
+        viewModelScope.launch { graph.audit.setRetentionDays(days) }
+    }
+
+    /** 清空本机全部调用日志（不可恢复） */
+    fun clearAudit() {
+        viewModelScope.launch { graph.audit.clear() }
+    }
 
     class Factory(private val graph: AppGraph, private val app: Application) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")

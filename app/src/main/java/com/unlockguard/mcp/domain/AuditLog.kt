@@ -10,6 +10,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.io.File
 import java.time.Instant
+import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
@@ -29,12 +30,18 @@ class AuditLog(private val context: Context) {
         val errorCode: String?,
     )
 
+    private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     private val file = File(context.filesDir, "audit.log")
     private val mutex = Mutex()
     private val keep = 200
 
     private val _recent = MutableStateFlow<List<Entry>>(emptyList())
     val recent: StateFlow<List<Entry>> = _recent.asStateFlow()
+
+    /** 日志默认保存天数（持久化，超期记录自动清理） */
+    private val _retentionDays =
+        MutableStateFlow(prefs.getInt(KEY_RETENTION_DAYS, DEFAULT_RETENTION_DAYS))
+    val retentionDays: StateFlow<Int> = _retentionDays.asStateFlow()
 
     suspend fun record(sourceIp: String, tool: String, args: String, ok: Boolean, errorCode: String?) {
         val entry = Entry(
@@ -46,21 +53,58 @@ class AuditLog(private val context: Context) {
             errorCode = errorCode,
         )
         mutex.withLock {
-            file.appendText(Json.encodeToString(Entry.serializer(), entry) + "\n")
-            val list = (_recent.value + entry).takeLast(keep)
-            _recent.value = list
+            runCatching { file.appendText(Json.encodeToString(Entry.serializer(), entry) + "\n") }
+            pruneLocked()
         }
     }
 
-    /** 重新载入最近 N 条（App 启动时调用） */
+    /** 重新载入最近 N 条（App 启动时调用），顺带清理超期记录 */
     suspend fun reload() {
+        mutex.withLock { pruneLocked() }
+    }
+
+    /** 修改默认保存天数（持久化）并立即清理超期记录 */
+    suspend fun setRetentionDays(days: Int) {
         mutex.withLock {
-            if (!file.exists()) return@withLock
-            val lines = file.readLines().takeLast(keep)
-            _recent.value = lines.mapNotNull {
-                runCatching { Json.decodeFromString<Entry>(it) }.getOrNull()
-            }
+            val d = days.coerceIn(1, 365)
+            prefs.edit().putInt(KEY_RETENTION_DAYS, d).apply()
+            _retentionDays.value = d
+            pruneLocked()
         }
+    }
+
+    /** 清空全部日志（文件与内存），不可恢复 */
+    suspend fun clear() {
+        mutex.withLock {
+            runCatching { file.writeText("") }
+            _recent.value = emptyList()
+        }
+    }
+
+    /**
+     * 按 [retentionDays] 清理超期记录并刷新内存列表；必须在 mutex 内调用。
+     * 时间解析失败的行一律保留，避免格式差异导致误删。
+     */
+    private fun pruneLocked() {
+        if (!file.exists()) {
+            _recent.value = emptyList()
+            return
+        }
+        val cutoff = LocalDateTime.now().minusDays(_retentionDays.value.toLong())
+        val lines = runCatching { file.readLines() }.getOrDefault(emptyList())
+        val kept = lines.filter { line ->
+            val t = runCatching {
+                LocalDateTime.parse(Json.decodeFromString<Entry>(line).time, FMT)
+            }.getOrNull()
+            t == null || !t.isBefore(cutoff)
+        }
+        if (kept.size != lines.size) {
+            val text = if (kept.isEmpty()) "" else kept.joinToString("\n", postfix = "\n")
+            runCatching { file.writeText(text) }
+        }
+        _recent.value = kept.mapNotNull {
+            runCatching { Json.decodeFromString<Entry>(it) }.getOrNull()
+        }.takeLast(keep)
     }
 
     fun exportCsv(): File {
@@ -77,5 +121,8 @@ class AuditLog(private val context: Context) {
 
     companion object {
         private val FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+        private const val PREFS = "guard_settings"
+        private const val KEY_RETENTION_DAYS = "audit_retention_days"
+        const val DEFAULT_RETENTION_DAYS = 7
     }
 }

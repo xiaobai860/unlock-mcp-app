@@ -31,6 +31,8 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.ScrollState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Article
@@ -64,8 +66,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalContext
 import com.unlockguard.mcp.ui.overlay.OverlayBallManager
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -96,7 +100,7 @@ import com.unlockguard.mcp.ui.components.EmptyHint
 import com.unlockguard.mcp.ui.components.ErrorDialog
 import com.unlockguard.mcp.ui.components.FieldRow
 import com.unlockguard.mcp.ui.components.GuardTabBar
-import com.unlockguard.mcp.ui.components.GuideSheet
+
 import com.unlockguard.mcp.ui.components.HLine
 import com.unlockguard.mcp.ui.components.Kicker
 import com.unlockguard.mcp.ui.components.Lead
@@ -134,20 +138,26 @@ fun AppRoot(vm: AppViewModel) {
     val scope = rememberCoroutineScope()
 
     var tab by remember { mutableIntStateOf(0) }
-    var sheetOpen by remember { mutableStateOf(false) }
+    // 「查看悬浮球」点击计数：每次 +1 触发设置页滚动定位到悬浮球卡片
+    var fabScrollNonce by remember { mutableIntStateOf(0) }
     var dialog by remember { mutableStateOf<DialogSpec?>(null) }
     var toast by remember { mutableStateOf<String?>(null) }
     var pinDialog by remember { mutableStateOf(false) }
     var pinValue by remember { mutableStateOf("") }
 
     val ui by vm.ui.collectAsStateWithLifecycle()
+    // 通道缺失项：Shizuku 主通道 / 无障碍备通道 / 安全锁定待恢复。
+    // 设备管理员是可选兜底（代价：生物识别失效），不计入缺失。
+    val missingCount = listOf(ui.shizuku, ui.accessibility).count { !it } + if (ui.lockedOut) 1 else 0
     val serviceOn by vm.serviceOn.collectAsStateWithLifecycle()
     val lanOn by vm.lanOn.collectAsStateWithLifecycle()
     val token by vm.token.collectAsStateWithLifecycle()
+    val logRetentionDays by vm.logRetentionDays.collectAsStateWithLifecycle()
     val addresses by vm.addresses.collectAsStateWithLifecycle()
     val fabOn by vm.fabOn.collectAsStateWithLifecycle()
     val verifyUi by vm.verify.collectAsStateWithLifecycle()
-    var verifyLockFirst by remember { mutableStateOf(false) }
+    // 默认开启「先锁屏再验证」：熄屏后重新解锁最接近真实调用场景
+    var verifyLockFirst by remember { mutableStateOf(true) }
 
     fun say(msg: String) {
         toast = msg
@@ -195,11 +205,12 @@ fun AppRoot(vm: AppViewModel) {
                         onReleaseLease = {
                             if (vm.releaseLease()) say("租约已释放，系统设置已还原") else say("当前没有可释放的租约")
                         },
-                        onShowFab = { sheetOpen = true },
+                        onShowFab = { tab = 4; fabScrollNonce++ },
                     )
 
                     2 -> StatusScreen(
                         ui = ui,
+                        missingCount = missingCount,
                         verifyUi = verifyUi,
                         verifyLockFirst = verifyLockFirst,
                         onVerifyLockFirst = { verifyLockFirst = it },
@@ -255,6 +266,20 @@ fun AppRoot(vm: AppViewModel) {
 
                     3 -> LogScreen(
                         logs = vm.auditRecent.collectAsStateWithLifecycle().value,
+                        retentionDays = logRetentionDays,
+                        onRetentionDays = { vm.setLogRetentionDays(it); say("日志保存天数已设为 $it 天") },
+                        onClearLogs = {
+                            dialog = DialogSpec(
+                                title = "清空调用日志？",
+                                body = "将删除本机保存的全部调用记录，且不可恢复。",
+                                code = "AUDIT_CLEAR",
+                                tone = Tone.Warn,
+                                icon = Icons.Outlined.Warning,
+                                confirmLabel = "确认清空",
+                                dismissLabel = "取消",
+                                onConfirm = { vm.clearAudit(); say("日志已清空") },
+                            )
+                        },
                         onExport = {
                             val f = runCatching { vm.exportAuditCsv() }.getOrNull()
                             say(if (f != null) "已导出：${f.name}" else "导出失败，请检查存储权限")
@@ -282,6 +307,7 @@ fun AppRoot(vm: AppViewModel) {
                         onEditPin = { pinValue = ""; pinDialog = true },
                         onFab = { on -> say(vm.setFab(on)) },
                         onCopyConfig = { copy(vm.copyConfig(), "MCP 连接配置已复制，可直接粘进 AI 客户端的 MCP 配置") },
+                        scrollNonce = fabScrollNonce,
                         wssGranted = ui.wssGranted,
                         adbGrantCmd = vm.adbGrantCommand(),
                     )
@@ -293,15 +319,6 @@ fun AppRoot(vm: AppViewModel) {
             }
             GuardTabBar(selected = tab, onSelect = { tab = it })
         }
-
-        GuideSheet(
-            visible = sheetOpen,
-            onDismiss = { sheetOpen = false },
-            onConfirm = {
-                sheetOpen = false
-                say("已收到，继续解锁流程")
-            },
-        )
 
         ErrorDialog(spec = dialog, onDismiss = { dialog = null })
 
@@ -678,6 +695,7 @@ private fun QuickStatRow(
 @Composable
 private fun StatusScreen(
     ui: PhoneUiState,
+    missingCount: Int,
     verifyUi: AppViewModel.VerifyUi,
     verifyLockFirst: Boolean,
     onVerifyLockFirst: (Boolean) -> Unit,
@@ -736,13 +754,18 @@ private fun StatusScreen(
         Spacer(Modifier.height(Spacing.s4))
         AppCard {
             CardHead("通道可用性") {
-                AppButton(
-                    text = "模拟缺失",
-                    onClick = onShowMissing,
-                    variant = BtnVariant.Ghost,
-                    small = true,
-                    leadingIcon = Icons.Outlined.Warning,
-                )
+                // 全部就绪时不再显示「模拟缺失」按钮，改为就绪标识
+                if (missingCount == 0) {
+                    Pill("双通道就绪", Tone.Ok)
+                } else {
+                    AppButton(
+                        text = if (missingCount == 1) "处理缺失" else "处理缺失 · $missingCount",
+                        onClick = onShowMissing,
+                        variant = BtnVariant.Ghost,
+                        small = true,
+                        leadingIcon = Icons.Outlined.Warning,
+                    )
+                }
             }
             FieldRow(
                 title = "Shizuku",
@@ -961,8 +984,17 @@ private val SETTING_TOOLS = setOf(
     "set_screen_timeout", "restore_settings", "grant_debug_auth", "release_lease", "get_phone_state",
 )
 
+/** 日志默认保存天数可选值（天） */
+private val LOG_RETENTION_OPTIONS = listOf(1, 3, 7, 30)
+
 @Composable
-private fun LogScreen(logs: List<AuditLog.Entry>, onExport: () -> Unit) {
+private fun LogScreen(
+    logs: List<AuditLog.Entry>,
+    retentionDays: Int,
+    onRetentionDays: (Int) -> Unit,
+    onClearLogs: () -> Unit,
+    onExport: () -> Unit,
+) {
     var filter by remember { mutableIntStateOf(0) }
     val filters = listOf("全部", "解锁", "锁屏", "设置", "错误")
 
@@ -990,6 +1022,37 @@ private fun LogScreen(logs: List<AuditLog.Entry>, onExport: () -> Unit) {
         ChipRow(labels = filters, selectedIndex = filter, onSelect = { filter = it })
         Spacer(Modifier.height(Spacing.s3))
 
+        AppCard {
+            CardHead("日志保留")
+            Text(
+                "超过保存天数的调用记录会自动清理，避免长期占用存储空间。",
+                style = AppText.body2,
+                color = semantic.text2,
+            )
+            Spacer(Modifier.height(Spacing.s3))
+            Text("默认保存", style = AppText.bodyStrong, color = MaterialTheme.colorScheme.onSurface)
+            Spacer(Modifier.height(Spacing.s2))
+            ChipRow(
+                labels = LOG_RETENTION_OPTIONS.map { "$it 天" },
+                selectedIndex = LOG_RETENTION_OPTIONS.indexOf(retentionDays).coerceAtLeast(0),
+                onSelect = { onRetentionDays(LOG_RETENTION_OPTIONS[it]) },
+            )
+            Spacer(Modifier.height(Spacing.s3))
+            FieldRow(
+                title = "清空日志",
+                desc = "立即删除本机全部调用记录，不可恢复",
+                last = true,
+            ) {
+                AppButton(
+                    text = "清空",
+                    onClick = onClearLogs,
+                    variant = BtnVariant.Ghost,
+                    small = true,
+                )
+            }
+        }
+
+        Spacer(Modifier.height(Spacing.s3))
         AppCard(padding = PaddingValues(horizontal = Spacing.s4, vertical = 6.dp)) {
             if (shown.isEmpty()) {
                 Spacer(Modifier.height(Spacing.s2))
@@ -1078,11 +1141,19 @@ private fun SettingsScreen(
     onEditPin: () -> Unit,
     onFab: (Boolean) -> Unit,
     onCopyConfig: () -> Unit,
+    scrollNonce: Int = 0,
 ) {
     var portText by remember(ui.port) { mutableStateOf(ui.port.toString()) }
     val masked = if (token.length > 8) token.take(6) + "••••••••••" + token.takeLast(4) else token
 
-    ScreenColumn {
+    val fabScrollState = rememberScrollState()
+    val fabCardY = remember { mutableIntStateOf(0) }
+    // 「查看悬浮球」跳转设置页后，自动滚动定位到悬浮球卡片
+    LaunchedEffect(scrollNonce, fabCardY.intValue) {
+        if (scrollNonce > 0 && fabCardY.intValue > 0) fabScrollState.scrollTo(fabCardY.intValue)
+    }
+
+    ScreenColumn(scrollState = fabScrollState) {
         Kicker("Settings")
         Spacer(Modifier.height(2.dp))
         PageTitle("设置", small = true)
@@ -1177,52 +1248,61 @@ private fun SettingsScreen(
         }
 
         Spacer(Modifier.height(Spacing.s4))
-        AppCard {
+        AppCard(
+            modifier = Modifier.onPlaced { coords ->
+                coords.parentLayoutCoordinates?.let { parent ->
+                    fabCardY.intValue = coords.localPositionOf(parent).y.toInt()
+                }
+            },
+        ) {
             CardHead("悬浮球")
             FieldRow(
                 title = "常驻显示",
                 desc = "退出应用后仍浮在屏幕上，可拖动，点一下回到本应用",
-                last = true,
+                last = !fabOn,
             ) {
                 AppSwitch(checked = fabOn, onCheckedChange = onFab)
             }
-            Spacer(Modifier.height(Spacing.s3))
-            val ctx = LocalContext.current
-            val sizeState = remember { mutableStateOf(OverlayBallManager.getSizeDp(ctx)) }
-            val alphaState = remember { mutableStateOf(OverlayBallManager.getAlpha(ctx)) }
-            val peekState = remember { mutableStateOf(OverlayBallManager.getPeekDp(ctx)) }
-            SliderRow(
-                title = "大小",
-                valueText = "${sizeState.value.toInt()} dp",
-                value = sizeState.value,
-                valueRange = 40f..96f,
-                onValueChange = {
-                    sizeState.value = it
-                    OverlayBallManager.setSizeDp(ctx, it)
-                },
-            )
-            Spacer(Modifier.height(Spacing.s2))
-            SliderRow(
-                title = "透明度",
-                valueText = "${(alphaState.value * 100).toInt()}%",
-                value = alphaState.value,
-                valueRange = 0.3f..1f,
-                onValueChange = {
-                    alphaState.value = it
-                    OverlayBallManager.setAlpha(ctx, it)
-                },
-            )
-            Spacer(Modifier.height(Spacing.s2))
-            SliderRow(
-                title = "贴边露出",
-                valueText = "${peekState.value.toInt()} dp",
-                value = peekState.value,
-                valueRange = 0f..48f,
-                onValueChange = {
-                    peekState.value = it
-                    OverlayBallManager.setPeekDp(ctx, it)
-                },
-            )
+            // 常驻关闭时收起外观调节，只保留开关与说明
+            if (fabOn) {
+                Spacer(Modifier.height(Spacing.s3))
+                val ctx = LocalContext.current
+                val sizeState = remember { mutableStateOf(OverlayBallManager.getSizeDp(ctx)) }
+                val alphaState = remember { mutableStateOf(OverlayBallManager.getAlpha(ctx)) }
+                val peekState = remember { mutableStateOf(OverlayBallManager.getPeekDp(ctx)) }
+                SliderRow(
+                    title = "大小",
+                    valueText = "${sizeState.value.toInt()} dp",
+                    value = sizeState.value,
+                    valueRange = 40f..96f,
+                    onValueChange = {
+                        sizeState.value = it
+                        OverlayBallManager.setSizeDp(ctx, it)
+                    },
+                )
+                Spacer(Modifier.height(Spacing.s2))
+                SliderRow(
+                    title = "透明度",
+                    valueText = "${(alphaState.value * 100).toInt()}%",
+                    value = alphaState.value,
+                    valueRange = 0.3f..1f,
+                    onValueChange = {
+                        alphaState.value = it
+                        OverlayBallManager.setAlpha(ctx, it)
+                    },
+                )
+                Spacer(Modifier.height(Spacing.s2))
+                SliderRow(
+                    title = "贴边露出",
+                    valueText = "${peekState.value.toInt()} dp",
+                    value = peekState.value,
+                    valueRange = 0f..48f,
+                    onValueChange = {
+                        peekState.value = it
+                        OverlayBallManager.setPeekDp(ctx, it)
+                    },
+                )
+            }
             Spacer(Modifier.height(Spacing.s2))
             NoteBox(
                 text = if (fabGranted) {
@@ -1260,7 +1340,11 @@ private fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.weight(1f),
                 )
-                CopyButton(text = "", onClick = { onCopy(adbGrantCmd, "adb 授权命令已复制，请在已连接 adb 的电脑终端执行") })
+                CopyButton(
+                    text = "复制",
+                    onClick = { onCopy(adbGrantCmd, "adb 授权命令已复制，请在已连接 adb 的电脑终端执行") },
+                    icon = Icons.Outlined.ContentCopy,
+                )
             }
             Spacer(Modifier.height(Spacing.s3))
             NoteBox(

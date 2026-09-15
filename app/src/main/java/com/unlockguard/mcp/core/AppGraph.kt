@@ -66,7 +66,8 @@ class AppGraph(private val app: Context) {
      */
     fun canBindLan(): Boolean = true
 
-    private val _lanOn = MutableStateFlow(false)
+    /** 局域网监听开关：持久化，重启手机后保持用户上次的选择 */
+    private val _lanOn = MutableStateFlow(prefs.getBoolean(KEY_LAN, false))
     val lanOn: StateFlow<Boolean> = _lanOn.asStateFlow()
 
     private val _serviceOn = MutableStateFlow(false)
@@ -132,6 +133,7 @@ class AppGraph(private val app: Context) {
     }
 
     fun setLan(on: Boolean) {
+        prefs.edit().putBoolean(KEY_LAN, on).apply()
         _lanOn.value = on
         if (server != null) { stopServer(); startServer() } // 重新绑定地址
         else refreshAddresses()
@@ -194,5 +196,6 @@ class AppGraph(private val app: Context) {
         const val DEFAULT_PORT = 8790
         private const val KEY_PORT = "port"
         private const val KEY_FAB = "fab_on"
+        private const val KEY_LAN = "lan_on"
     }
 }
