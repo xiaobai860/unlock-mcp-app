@@ -29,6 +29,7 @@ class AppGraph(private val app: Context) {
     val leaseManager = LeaseManager(app)
     val audit = AuditLog(app)
     val rateLimiters: MutableMap<String, RateLimiter> = ConcurrentHashMap()
+    val ipLimiters: MutableMap<String, RateLimiter> = ConcurrentHashMap()
     val unlockEngine = RealUnlockEngine(app, pinStore, unlockRateLimiter, leaseManager)
     val permissions = DevicePermissions(app)
 
@@ -109,6 +110,7 @@ class AppGraph(private val app: Context) {
                 audit = audit,
                 unlockEngine = unlockEngine,
                 rateLimiters = rateLimiters,
+                ipLimiters = ipLimiters,
             )
             server = McpServer(ctx).also { it.start() }
             _serviceOn.value = true

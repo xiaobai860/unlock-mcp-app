@@ -18,8 +18,30 @@ import com.unlockguard.mcp.unlock.UnlockResult
  */
 object Tools {
 
-    suspend fun dispatch(ctx: McpContext, name: String, args: JsonObject, sourceIp: String): ToolEnvelope =
-        when (name) {
+    /** 各工具接受的参数名白名单（服务端强制 inputSchema，F1） */
+    private val TOOL_ARGS: Map<String, Set<String>> = mapOf(
+        "get_phone_state" to emptySet(),
+        "unlock_phone" to setOf("ttl_seconds"),
+        "release_lease" to setOf("lease_id"),
+        "lock_phone" to emptySet(),
+        "set_screen_timeout" to setOf("screen_off_ms", "lock_after_ms"),
+        "restore_settings" to emptySet(),
+        "grant_debug_auth" to emptySet(),
+    )
+
+    suspend fun dispatch(ctx: McpContext, name: String, args: JsonObject, sourceIp: String): ToolEnvelope {
+        // 服务端强制 inputSchema（F1）：拒绝未知参数（inputSchema 声明 additionalProperties:false 但此前未落地执行），
+        // 避免「参数名写错被静默忽略→走默认值」这类误判/混淆。类型错误由下方 .int 强制抛错后统一兜成 INVALID_PARAMS。
+        val allowed = TOOL_ARGS[name]
+        for (key in args.keys) {
+            if (allowed == null || key !in allowed) {
+                ctx.audit.record(sourceIp, name, "bad-arg:$key", false, ErrorCodes.INVALID_PARAMS)
+                return ToolEnvelope(false, null,
+                    McpError(ErrorCodes.INVALID_PARAMS, "未知参数: $key",
+                        "该工具不接受参数 '$key'（可用参数：${allowed?.joinToString() ?: "无"}）"))
+            }
+        }
+        return when (name) {
             "get_phone_state" -> getPhoneState(ctx, sourceIp)
             "unlock_phone" -> {
                 val ttl = args["ttl_seconds"]?.jsonPrimitive?.int ?: LeaseManager.DEFAULT_TTL
@@ -45,6 +67,7 @@ object Tools {
             "grant_debug_auth" -> grantDebugAuth(ctx)
             else -> ToolEnvelope(false, null, McpError("UNKNOWN_TOOL", "未知工具: $name", "检查客户端工具名"))
         }
+    }
 
     private suspend fun getPhoneState(ctx: McpContext, sourceIp: String): ToolEnvelope {
         val a = ctx.unlockEngine.availability()

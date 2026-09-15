@@ -44,10 +44,11 @@ class JsonRpcWireContractTest {
     }
 
     @Test
-    fun `initialize-style response keeps jsonrpc 2_0 with string id`() {
+    fun `server-discover-style response keeps jsonrpc 2_0 with string id`() {
+        // 2026-07-28 移除 initialize 握手，改为 server/discover 声明支持的协议版本
         val resp = RpcResponse(
             id = JsonPrimitive("sess-abc"),
-            result = JsonObject(mapOf("protocolVersion" to JsonPrimitive("2024-11-05"))),
+            result = JsonObject(mapOf("protocolVersions" to JsonPrimitive("2026-07-28"))),
         )
         val wire = productionJson.encodeToString(RpcResponse.serializer(), resp)
         val obj = productionJson.parseToJsonElement(wire).jsonObject
