@@ -175,9 +175,10 @@ class McpServer(private val ctx: McpContext) {
             return
         }
         // MUST: 不支持的协议版本 → 400（列出支持的版本）
+        // 不支持的协议版本 → 400 + -32022 UnsupportedProtocolVersion（与 HeaderMismatch -32020 区分）
         if (headerVersion != SUPPORTED_VERSION) {
             respondJson(HttpStatusCode.BadRequest,
-                RpcResponse(id = req.id, error = RpcError(-32020, "Unsupported protocol version: $headerVersion",
+                RpcResponse(id = req.id, error = RpcError(-32022, "Unsupported protocol version: $headerVersion",
                     hintObj("supported: $SUPPORTED_VERSION"))))
             return
         }
@@ -261,47 +262,74 @@ class McpServer(private val ctx: McpContext) {
      * 替代旧版的 initialize 握手，供客户端在跳过握手的前提下完成版本/能力协商。
      */
     private fun discoverResult(): JsonElement = buildJsonObject {
-        putJsonArray("protocolVersions") { add(JsonPrimitive(SUPPORTED_VERSION)) }
+        put("resultType", JsonPrimitive("complete"))
+        putJsonArray("supportedVersions") { add(JsonPrimitive(SUPPORTED_VERSION)) }
         putJsonObject("capabilities") { putJsonObject("tools") {} }
-        putJsonObject("serverInfo") {
-            put("name", JsonPrimitive("unlock-guard-mcp"))
-            put("version", JsonPrimitive(ctx.version))
-        }
-    }
-
-    private fun toolsList(): JsonElement {
-        fun schema(props: Map<String, String>): JsonObject = buildJsonObject {
-            put("type", JsonPrimitive("object"))
-            putJsonObject("properties") {
-                props.forEach { (k, v) ->
-                    putJsonObject(k) { put("type", JsonPrimitive(v)); put("description", JsonPrimitive(k)) }
-                }
+        // 规范：serverInfo 置于 _meta.io.modelcontextprotocol/serverInfo（客户端不应据此做安全决策）
+        putJsonObject("_meta") {
+            putJsonObject("io.modelcontextprotocol/serverInfo") {
+                put("name", JsonPrimitive("unlock-guard-mcp"))
+                put("version", JsonPrimitive(ctx.version))
             }
         }
-        return buildJsonObject {
-            putJsonArray("tools") {
-                add(toolDef("get_phone_state", "查询手机屏幕/锁屏/通道可用性/租约状态", emptyMap()))
-                add(toolDef("unlock_phone", "解锁并返回带 TTL 的租约", mapOf("ttl_seconds" to "integer")))
-                add(toolDef("release_lease", "提前释放租约并还原设置", mapOf("lease_id" to "string")))
-                add(
-                    toolDef(
-                        "lock_phone",
-                        "锁屏。按 无障碍 GLOBAL_ACTION_LOCK_SCREEN（首选，保留指纹）→ 设备管理员 lockNow（保底，生物识别失效）→ Shizuku 逐级降级；" +
-                            "返回实际使用的 channel_used 与 biometric_preserved",
-                        emptyMap(),
-                    ),
-                )
-                add(toolDef("set_screen_timeout", "设置熄屏与锁屏宽限时间", mapOf("screen_off_ms" to "integer", "lock_after_ms" to "integer")))
-                add(toolDef("restore_settings", "还原系统设置快照（会释放当前租约）", emptyMap()))
-                add(toolDef("grant_debug_auth", "上报无线调试授权状态与引导", emptyMap()))
-            }
-            // 2026-07-28 MUST：列表响应须带缓存元数据，否则网关缓存失效、判定不合规
-            put("ttlMs", JsonPrimitive(TOOLS_LIST_TTL_MS))
-            put("cacheScope", JsonPrimitive("private"))
-        }
+        put("ttlMs", JsonPrimitive(DISCOVER_TTL_MS))
+        put("cacheScope", JsonPrimitive("private"))
     }
 
-    private fun toolDef(name: String, desc: String, props: Map<String, String>): JsonObject = buildJsonObject {
+    /**
+     * 工具清单。每个工具的 description 与参数 description 都写清：用途 / 前置条件 / 副作用 /
+     * 单位 / 取值范围 / 默认值，让 AI 客户端在 tools/list 阶段即可正确理解并正确传参。
+     * props: 参数名 -> (JSON 类型, 人类可读描述)
+     */
+    private fun toolsList(): JsonElement = buildJsonObject {
+        putJsonArray("tools") {
+            add(toolDef("get_phone_state",
+                "只读探针：返回手机当前屏幕是否亮、是否锁屏、Shizuku/无障碍两通道是否可用、当前租约信息" +
+                    "(lease_id/remaining_sec/holder/channel_used)、是否处于解锁失败锁定、以及服务启动错误。" +
+                    "调用任何写操作前应先调用它了解状态。无副作用。",
+                emptyMap()))
+
+            add(toolDef("unlock_phone",
+                "解锁手机并建立带 TTL 的保活租约：租约有效期内屏幕保持不锁屏，到期或 release_lease 后自动还原设置快照。" +
+                    "需 Shizuku 或无障碍通道已授权。已有活跃租约时拒绝(LEASE_CONFLICT)。这是有副作用的敏感操作。",
+                mapOf(
+                    "ttl_seconds" to ("integer" to "租约时长(秒)。范围 1–1800，默认 300。负值会被拒绝(INVALID_PARAMS)。"),
+                )))
+
+            add(toolDef("release_lease",
+                "提前释放当前或指定租约，并还原保活期间改动的系统设置(灭屏超时/锁屏宽限)。幂等。不自动锁屏(设备空闲会自行锁屏)。",
+                mapOf(
+                    "lease_id" to ("string" to "要释放的租约 id，取自 unlock_phone 返回的 lease_id。省略则释放当前活跃租约。"),
+                )))
+
+            add(toolDef("lock_phone",
+                "立即锁屏。按 无障碍 GLOBAL_ACTION_LOCK_SCREEN(首选，保留指纹) → 设备管理员 lockNow(保底，生物识别失效) → Shizuku 逐级降级。" +
+                    "返回实际通道 channel_used 与 biometric_preserved(生物识别是否仍可用，客户端据此决定后续等指纹还是输 PIN)。有副作用。",
+                emptyMap()))
+
+            add(toolDef("set_screen_timeout",
+                "直接写系统设置：灭屏超时与锁屏宽限时间。需 WRITE_SETTINGS 权限，缺权限返回 PERMISSION_MISSING。" +
+                    "注意：不经过租约管理，重启或系统策略可能回退。",
+                mapOf(
+                    "screen_off_ms" to ("integer" to "灭屏超时(毫秒)。默认 60000。"),
+                    "lock_after_ms" to ("integer" to "锁屏宽限(毫秒)：亮屏后多久无操作才锁屏。默认 5000。"),
+                )))
+
+            add(toolDef("restore_settings",
+                "还原租约保存的系统设置快照(灭屏超时/锁屏宽限)。无活跃快照时返回 restored:false。会释放当前租约。",
+                emptyMap()))
+
+            add(toolDef("grant_debug_auth",
+                "调试授权引导：返回无线调试(Shizuku)授权是否还需手动确认及提示文案。当前固定返回 adb_auth_required:false；" +
+                    "若手机弹窗要求授权，请在设备上点「允许」。",
+                emptyMap()))
+        }
+        // 2026-07-28 MUST：列表响应须带缓存元数据，否则网关缓存失效、判定不合规
+        put("ttlMs", JsonPrimitive(TOOLS_LIST_TTL_MS))
+        put("cacheScope", JsonPrimitive("private"))
+    }
+
+    private fun toolDef(name: String, desc: String, props: Map<String, Pair<String, String>>): JsonObject = buildJsonObject {
         put("name", JsonPrimitive(name))
         put("description", JsonPrimitive(desc))
         // 工具级注解：帮助客户端做权限 / 确认策略（只读 vs 有副作用）
@@ -314,10 +342,16 @@ class McpServer(private val ctx: McpContext) {
         }
         put("inputSchema", buildJsonObject {
             put("type", JsonPrimitive("object"))
-            putJsonArray("required") {} // 当前所有参数均有默认值，无强制必填
+            putJsonArray("required") {} // 所有参数均有默认值或可选，无强制必填
             put("additionalProperties", JsonPrimitive(false))
             putJsonObject("properties") {
-                props.forEach { (k, v) -> putJsonObject(k) { put("type", JsonPrimitive(v)); put("description", JsonPrimitive(k)) } }
+                props.forEach { (k, v) ->
+                    val (type, pdesc) = v
+                    putJsonObject(k) {
+                        put("type", JsonPrimitive(type))
+                        put("description", JsonPrimitive(pdesc))
+                    }
+                }
             }
         })
     }
@@ -347,6 +381,8 @@ class McpServer(private val ctx: McpContext) {
         const val SUPPORTED_VERSION: String = "2026-07-28"
         /** tools/list 等列表响应缓存时长（毫秒） */
         private const val TOOLS_LIST_TTL_MS = 60_000L
+        /** server/discover 响应缓存时长（毫秒）；服务端身份/能力极少变化，给较长 TTL */
+        private const val DISCOVER_TTL_MS = 3_600_000L
         private val KNOWN_TOOLS = setOf(
             "get_phone_state", "unlock_phone", "release_lease", "lock_phone",
             "set_screen_timeout", "restore_settings", "grant_debug_auth",

@@ -97,6 +97,12 @@ object Tools {
     }
 
     private suspend fun unlockPhone(ctx: McpContext, ttlSeconds: Int, sourceIp: String): ToolEnvelope {
+        // ttl 必须 ≥ 1：负值（如 -5）旧实现会静默钳为 1 并真实解锁 → 显式拒绝，避免"非法输入被吞掉后照常执行"
+        if (ttlSeconds < 1) {
+            ctx.audit.record(sourceIp, "unlock_phone", "ttl=$ttlSeconds", false, ErrorCodes.INVALID_PARAMS)
+            return ToolEnvelope(false, null,
+                McpError(ErrorCodes.INVALID_PARAMS, "ttl_seconds 必须 ≥ 1", "传入值 $ttlSeconds 无效，合法范围 1–${LeaseManager.MAX_TTL}"))
+        }
         // 全局唯一租约：已有活跃租约不抢占
         val existing = ctx.leaseManager.info()
         if (existing != null) {

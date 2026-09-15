@@ -6,11 +6,11 @@ import kotlin.time.Clock
 
 /**
  * 速率限制 + 安全失败锁定（每个 Token 独立）。
- * - 每分钟请求数上限（默认 30）。
+ * - 每分钟请求数上限（默认 120，即 2 次/秒；正常客户端宽裕，仍保留解锁失败锁定作为抗爆破主防线）。
  * - unlock_phone 连续失败 5 次 → 锁定 10 分钟，期间拒绝自动解锁（LOCKED_OUT）。
  */
 class RateLimiter(
-    private val maxPerMinute: Int = 30,
+    private val maxPerMinute: Int = 120,
     private val failThreshold: Int = 5,
     private val lockoutMs: Long = 10 * 60_000L,
 ) {
