@@ -115,14 +115,19 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
 
-    // MCP / HTTP Server（Streamable HTTP）
-    // Ktor 3.x：与 2.x 相比为破坏性升级（改用 kotlinx-io），本项目仅用到
-    // embeddedServer(CIO)/routing/receiveText/respondText 等稳定 API，已验证兼容。
+    // MCP 官方 Kotlin SDK（0.15.0 = 2025-11-25 协议线，含 initialize 握手与版本协商）
+    // 协议层（JSON-RPC 编解码、生命周期、能力协商、错误码、Streamable HTTP）全部由 SDK 实现，本项目不再自研。
+    implementation("io.modelcontextprotocol:kotlin-sdk-server:0.15.0")
+
+    // Ktor 3.x：与 2.x 相比为破坏性升级（改用 kotlinx-io）。
+    // SDK 不传递 engine，故本项目自声明 CIO；
+    // 以下 core / sse / content-negotiation / serialization 为 SDK 运行所需
+    // （SDK 自身传递引入的是 3.5.1，显式对齐 3.5.2，避免与 CIO 混版）。
     implementation("io.ktor:ktor-server-cio:3.5.2")
+    implementation("io.ktor:ktor-server-core:3.5.2")
+    implementation("io.ktor:ktor-server-sse:3.5.2")
     implementation("io.ktor:ktor-server-content-negotiation:3.5.2")
     implementation("io.ktor:ktor-serialization-kotlinx-json:3.5.2")
-    implementation("io.ktor:ktor-server-call-logging:3.5.2")
-    implementation("io.ktor:ktor-server-default-headers:3.5.2")
 
     // 安全存储（PIN / Token）：1.1.0 已转正式版，脱离 alpha
     implementation("androidx.security:security-crypto:1.1.0")

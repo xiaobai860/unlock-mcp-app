@@ -7,7 +7,7 @@ import com.unlockguard.mcp.domain.LeaseManager
 import com.unlockguard.mcp.domain.PinStore
 import com.unlockguard.mcp.domain.RateLimiter
 import com.unlockguard.mcp.mcp.McpContext
-import com.unlockguard.mcp.mcp.McpServer
+import com.unlockguard.mcp.mcp.SdkMcpServer
 import com.unlockguard.mcp.unlock.RealUnlockEngine
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -93,7 +93,7 @@ class AppGraph(private val app: Context) {
     private val _addresses = MutableStateFlow<List<String>>(emptyList())
     val addresses: StateFlow<List<String>> = _addresses.asStateFlow()
 
-    private var server: McpServer? = null
+    private var server: SdkMcpServer? = null
 
     fun startServer() {
         if (server != null) return
@@ -113,7 +113,7 @@ class AppGraph(private val app: Context) {
                 rateLimiters = rateLimiters,
                 ipLimiters = ipLimiters,
             )
-            server = McpServer(ctx).also { it.start() }
+            server = SdkMcpServer(ctx).also { it.start() }
             _serviceOn.value = true
             _startedAtMs = android.os.SystemClock.elapsedRealtime()
             refreshAddresses()

@@ -123,7 +123,8 @@ class McpForegroundService : Service() {
         return Notification.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.notification_title))
             .setContentText(getString(R.string.notification_text))
-            .setSmallIcon(android.R.drawable.ic_dialog_info) // 占位，建议替换为品牌图标
+            // 品牌盾牌剪影（白色实心 + 透明，符合通知 small icon 单色着色要求）
+            .setSmallIcon(R.drawable.ic_stat_shield)
             .setContentIntent(pi)
             .setOngoing(true)
             .build()

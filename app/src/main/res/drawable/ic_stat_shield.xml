@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  常驻通知的小图标（品牌盾牌，实心剪影）。
+
+  与悬浮球用的 ic_overlay_shield 不同：
+  - 通知 small icon 在状态栏只有约 16dp，描边式在此尺寸会糊成一团，故用实心剪影；
+  - Android 5.0+ 会对通知 small icon 做单色着色，因此必须是「白色实心 + 透明背景」，
+    不能用彩色或深色填充（否则会显示成一个实心色块，反而丢失形状）。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M12,1 L3,5 V11 c0,5.55 3.84,10.74 9,12 c5.16,-1.26 9,-6.45 9,-12 V5 Z" />
+</vector>
