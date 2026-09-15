@@ -282,6 +282,8 @@ fun AppRoot(vm: AppViewModel) {
                         onEditPin = { pinValue = ""; pinDialog = true },
                         onFab = { on -> say(vm.setFab(on)) },
                         onCopyConfig = { copy(vm.copyConfig(), "MCP 连接配置已复制，可直接粘进 AI 客户端的 MCP 配置") },
+                        wssGranted = ui.wssGranted,
+                        adbGrantCmd = vm.adbGrantCommand(),
                     )
                 }
                 // 悬浮球已改为系统级悬浮窗（见 OverlayBallManager）：
@@ -1067,6 +1069,8 @@ private fun SettingsScreen(
     hasPin: Boolean,
     fabOn: Boolean,
     fabGranted: Boolean,
+    wssGranted: Boolean,
+    adbGrantCmd: String,
     onLan: (Boolean) -> Unit,
     onPort: (String) -> Unit,
     onCopy: (String, String) -> Unit,
@@ -1227,6 +1231,45 @@ private fun SettingsScreen(
                     "尚未获得「显示在其他应用上层」权限。打开开关会跳转系统授权页，授权后回来再打开一次即可。"
                 },
                 icon = if (fabGranted) Icons.Outlined.Shield else Icons.Outlined.Warning,
+            )
+        }
+
+        Spacer(Modifier.height(Spacing.s4))
+        AppCard {
+            CardHead("无障碍 · 重启免手动开启") {
+                Pill(if (wssGranted) "已授权" else "未授权", if (wssGranted) Tone.Ok else Tone.Warn)
+            }
+            Text(
+                "部分国产 ROM 会在重启后自动关闭第三方无障碍服务。授予下方特权权限后，应用可在开机时自动把它重新写回系统启用列表，无需你手动到「无障碍」设置页重新开启。",
+                style = AppText.body2,
+                color = semantic.text2,
+            )
+            Spacer(Modifier.height(Spacing.s3))
+            Row(
+                Modifier.fillMaxWidth()
+                    .clip(AppShapes.medium)
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .border(1.dp, semantic.border, AppShapes.medium)
+                    .padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Spacing.s2),
+            ) {
+                Text(
+                    adbGrantCmd,
+                    style = AppText.mono,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.weight(1f),
+                )
+                CopyButton(text = "", onClick = { onCopy(adbGrantCmd, "adb 授权命令已复制，请在已连接 adb 的电脑终端执行") })
+            }
+            Spacer(Modifier.height(Spacing.s3))
+            NoteBox(
+                text = if (wssGranted) {
+                    "已授权：重启后将自动保持无障碍服务开启。"
+                } else {
+                    "未授权：在已连接 adb 的电脑上执行上面命令（一次性）；重装应用或恢复出厂会失效。该权限仅用于重写无障碍设置，不影响其它功能。"
+                },
+                icon = if (wssGranted) Icons.Outlined.Shield else Icons.Outlined.Warning,
             )
         }
 

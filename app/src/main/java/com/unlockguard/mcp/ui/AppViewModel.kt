@@ -31,6 +31,8 @@ data class PhoneUiState(
     val accessibility: Boolean = false,
     /** 设备管理员是否已激活（锁屏第二级兜底） */
     val deviceAdmin: Boolean = false,
+    /** 是否持有 WRITE_SECURE_SETTINGS（无障碍重启免手动开启的前提） */
+    val wssGranted: Boolean = false,
     val leaseActive: Boolean = false,
     val leaseRemainingSec: Int = 0,
     val leaseTotalSec: Int = 0,
@@ -81,6 +83,7 @@ class AppViewModel(private val graph: AppGraph, app: Application) : AndroidViewM
             shizuku = shizuku,
             accessibility = accessibility,
             deviceAdmin = graph.permissions.isDeviceAdminActive(),
+            wssGranted = graph.permissions.canWriteSecureSettings(),
             leaseActive = graph.leaseManager.isActive(),
             leaseRemainingSec = graph.leaseManager.remainingSec(),
             leaseTotalSec = graph.leaseManager.totalSec(),
@@ -139,6 +142,10 @@ class AppViewModel(private val graph: AppGraph, app: Application) : AndroidViewM
     /* ---------------- 悬浮球 ---------------- */
 
     fun canDrawOverlay(): Boolean = OverlayBallManager.canDraw(getApplication())
+
+    /** 一键复制的 adb 授权命令：用户在电脑终端执行即可授予 WRITE_SECURE_SETTINGS */
+    fun adbGrantCommand(): String =
+        "adb shell pm grant ${getApplication<Application>().packageName} android.permission.WRITE_SECURE_SETTINGS"
 
     /**
      * 切换悬浮球显隐。

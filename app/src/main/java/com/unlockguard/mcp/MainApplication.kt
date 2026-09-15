@@ -3,6 +3,7 @@ package com.unlockguard.mcp
 import android.app.Application
 import android.content.pm.PackageManager
 import android.util.Log
+import com.unlockguard.mcp.accessibility.AccessibilityKeeper
 import com.unlockguard.mcp.core.AppGraph
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -17,6 +18,8 @@ class MainApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         graph = AppGraph(this)
+        // 持有 WRITE_SECURE_SETTINGS 时，应用启动即尝试把无障碍服务写回系统启用列表（与开机自启互补）
+        CoroutineScope(Dispatchers.IO).launch { AccessibilityKeeper.ensureEnabled(applicationContext) }
         // 尝试绑定 Shizuku（其 App 运行时可用；权限授予由 Shizuku 自身 UI 完成）
         runCatching { Shizuku.pingBinder() }
         // binder 送达 / 断开留痕：Shizuku 的 binder 是异步送达的，多进程与冷启动场景下

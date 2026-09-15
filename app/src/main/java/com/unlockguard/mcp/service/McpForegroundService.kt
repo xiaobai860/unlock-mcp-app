@@ -21,6 +21,7 @@ import com.unlockguard.mcp.R
 import com.unlockguard.mcp.core.AppGraph
 import com.unlockguard.mcp.ui.MainActivity
 import com.unlockguard.mcp.ui.overlay.OverlayBallManager
+import com.unlockguard.mcp.accessibility.AccessibilityKeeper
 import com.unlockguard.mcp.unlock.ShizukuUserServiceHub
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -58,6 +59,8 @@ class McpForegroundService : Service() {
         // 启动失败（端口占用等）不得崩进程：仅记录，服务保持前台、无法响应请求
         runCatching { graph.startServer() }
             .onFailure { Log.e(TAG, "服务启动失败（端口可能被占用），MCP 服务不可用", it) }
+        // 持有 WRITE_SECURE_SETTINGS 时，开机/启动即把本应用无障碍服务写回系统启用列表（重启免手动开启）
+        scope.launch(Dispatchers.IO) { AccessibilityKeeper.ensureEnabled(applicationContext) }
         attachFab()
         return START_STICKY
     }

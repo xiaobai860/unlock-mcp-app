@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.PowerManager
 import android.provider.Settings
@@ -60,6 +61,11 @@ class DevicePermissions(private val ctx: Context) {
 
     /** 悬浮窗（后台弹出兜底所需） */
     fun canDrawOverlays(): Boolean = runCatching { Settings.canDrawOverlays(ctx) }.getOrDefault(false)
+
+    /** 是否持有 WRITE_SECURE_SETTINGS：无障碍「重启免手动开启」的前提，需用户在电脑上 adb 一次性授予 */
+    fun canWriteSecureSettings(): Boolean = runCatching {
+        ctx.checkSelfPermission(android.Manifest.permission.WRITE_SECURE_SETTINGS) == PackageManager.PERMISSION_GRANTED
+    }.getOrDefault(false)
 
     /** 设备管理员是否已激活（锁屏第二级兜底） */
     fun isDeviceAdminActive(): Boolean = ScreenLockAdmin.isActive(ctx)

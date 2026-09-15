@@ -22,6 +22,14 @@
     <!-- 锁屏保底（DeviceAdmin 可选，方案以 Shizuku/无障碍为主） -->
     <uses-permission android:name="android.permission.DISABLE_KEYGUARD" tools:ignore="ProtectedPermissions" />
 
+    <!-- 无障碍「重启后免手动开启」：WRITE_SECURE_SETTINGS 为 signature|privileged|development 级，
+         无法在 Manifest 自获取，需用户在已连接 adb 的电脑上一次性 `pm grant` 授予。
+         持有后可在开机 / 应用启动自动把本应用无障碍服务重写回系统启用列表。
+         tools:ignore 因为该权限受保护、本就走 adb 授权而非安装期授予。 -->
+    <uses-permission
+        android:name="android.permission.WRITE_SECURE_SETTINGS"
+        tools:ignore="ProtectedPermissions" />
+
     <application
         android:name=".MainApplication"
         android:allowBackup="false"
