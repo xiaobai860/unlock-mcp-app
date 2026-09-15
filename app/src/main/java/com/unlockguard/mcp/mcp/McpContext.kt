@@ -23,4 +23,6 @@ data class McpContext(
     val audit: AuditLog,
     val unlockEngine: UnlockEngine,
     val rateLimiters: MutableMap<String, RateLimiter>,
+    /** 服务启动失败原因（如端口被占用）；成功启动后为 null。供 get_phone_state 与 UI 展示 */
+    var lastStartError: String? = null,
 )

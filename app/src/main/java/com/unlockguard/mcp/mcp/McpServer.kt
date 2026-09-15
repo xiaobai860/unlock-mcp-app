@@ -64,15 +64,23 @@ class McpServer(private val ctx: McpContext) {
     private val sessions = ConcurrentHashMap<String, Long>()
 
     fun start() {
-        engine = embeddedServer(CIO, host = ctx.bindHost, port = ctx.port) {
-            routing {
-                get("/health") { call.respondText(healthJson(), ContentType.Application.Json) }
+        runCatching {
+            engine = embeddedServer(CIO, host = ctx.bindHost, port = ctx.port) {
+                routing {
+                    get("/health") { call.respondText(healthJson(), ContentType.Application.Json) }
 
-                post("/mcp") { call.handlePost() }
-                get("/mcp") { call.handleGet() }
-                delete("/mcp") { call.respondText("", status = HttpStatusCode.NoContent) }
-            }
-        }.start(wait = false)
+                    post("/mcp") { call.handlePost() }
+                    get("/mcp") { call.handleGet() }
+                    delete("/mcp") { call.respondText("", status = HttpStatusCode.NoContent) }
+                }
+            }.start(wait = false)
+        }.onFailure { e ->
+            // 端口被占用 / 绑定失败不得冒泡到 onStartCommand，否则前台服务启动抛异常会崩进程
+            ctx.lastStartError = "端口 ${ctx.port} 绑定失败：${e.message}"
+            Log.e(TAG, "MCP server 启动失败", e)
+            return
+        }
+        ctx.lastStartError = null
         Log.i(TAG, "MCP server started on ${ctx.bindHost}:${ctx.port}")
     }
 

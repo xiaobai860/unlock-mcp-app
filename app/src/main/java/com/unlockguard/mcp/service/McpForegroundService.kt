@@ -21,6 +21,7 @@ import com.unlockguard.mcp.R
 import com.unlockguard.mcp.core.AppGraph
 import com.unlockguard.mcp.ui.MainActivity
 import com.unlockguard.mcp.ui.overlay.OverlayBallManager
+import com.unlockguard.mcp.unlock.ShizukuUserServiceHub
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -54,12 +55,17 @@ class McpForegroundService : Service() {
         startForeground(NOTIF_ID, buildNotification())
         acquireWifiLock()
         registerNetworkRecovery()
-        graph.startServer()
+        // 启动失败（端口占用等）不得崩进程：仅记录，服务保持前台、无法响应请求
+        runCatching { graph.startServer() }
+            .onFailure { Log.e(TAG, "服务启动失败（端口可能被占用），MCP 服务不可用", it) }
         attachFab()
         return START_STICKY
     }
 
     override fun onDestroy() {
+        // 释放 Shizuku UserService 进程（unbindUserService(..., true) 会结束 :unlock 进程），避免泄漏
+        runCatching { ShizukuUserServiceHub.release(applicationContext) }
+            .onFailure { Log.w(TAG, "释放 UserService 进程失败：${it.message}") }
         graph.stopServer()
         releaseWifiLock()
         unregisterNetworkRecovery()

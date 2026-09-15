@@ -169,13 +169,9 @@ internal class InputInjector {
             global.javaClass.getMethod("getInputManager").invoke(global)
         }.getOrNull()?.let { return it }
 
-        runCatching {
-            val at = Class.forName("android.app.ActivityThread")
-            val main = at.getMethod("systemMain").invoke(null)
-            val ctx = at.getMethod("getSystemContext").invoke(main) as android.content.Context
-            ctx.getSystemService(android.content.Context.INPUT_SERVICE)
-        }.getOrNull()?.let { return it }
-
+        // ③ 删除 ActivityThread.systemMain() 兜底：在 shizuku_server 进程里 attach Application
+        //    属已知长阻塞 / 可死锁路径（本次 ANR 的卡死源头之一）。两路反射都拿不到时，
+        //    直接降级到 shell 后端（/system/bin/input）或 none，宁可慢百毫秒也不要卡死服务。
         return null
     }
 

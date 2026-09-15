@@ -67,6 +67,7 @@ object Tools {
                 put("lease", JsonPrimitive(null as String?))
             }
             put("locked_out", JsonPrimitive(ctx.unlockEngine.isLockedOut()))
+            put("server_start_error", JsonPrimitive(ctx.lastStartError ?: ""))
         }
         ctx.audit.record(sourceIp, "get_phone_state", "-", true, null)
         return ToolEnvelope(true, data)

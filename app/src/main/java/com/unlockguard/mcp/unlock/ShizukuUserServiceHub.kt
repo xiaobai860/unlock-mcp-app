@@ -33,8 +33,8 @@ object ShizukuUserServiceHub {
     @Volatile
     private var binder: IBinder? = null
 
-    @Volatile
-    private var awaiting: ((IUnlockUserService?) -> Unit)? = null
+    /** 等待绑定的回调列表；用并发集合避免并发 obtain 相互覆盖（原单槽会丢回调导致偶发绑定超时） */
+    private val awaitingList = java.util.concurrent.CopyOnWriteArrayList<(IUnlockUserService?) -> Unit>()
 
     @Volatile
     private var cachedArgs: Shizuku.UserServiceArgs? = null
@@ -44,16 +44,16 @@ object ShizukuUserServiceHub {
             val s = IUnlockUserService.Stub.asInterface(binder)
             service = s
             this@ShizukuUserServiceHub.binder = binder
-            val backend = runCatching { s?.probe() }.getOrNull()
-            Log.i(TAG, "UserService 已连接 · 注入后端=$backend")
-            awaiting?.invoke(s)
-            awaiting = null
+            // 主线程只做「交接」，绝不做任何跨进程调用（避免主线程被 Binder transact 阻塞 → ANR）
+            awaitingList.forEach { it(s) }
+            awaitingList.clear()
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
             Log.w(TAG, "UserService 断开")
             service = null
             binder = null
+            awaitingList.clear()
         }
     }
 
@@ -89,12 +89,13 @@ object ShizukuUserServiceHub {
 
         return withTimeoutOrNull(timeoutMs) {
             suspendCancellableCoroutine { cont ->
-                awaiting = { s -> if (cont.isActive) cont.resume(s) }
-                cont.invokeOnCancellation { awaiting = null }
+                val cb: (IUnlockUserService?) -> Unit = { s -> if (cont.isActive) cont.resume(s) }
+                awaitingList += cb
+                cont.invokeOnCancellation { awaitingList -= cb }
                 runCatching { Shizuku.bindUserService(argsFor(ctx), connection) }
                     .onFailure { e ->
                         Log.w(TAG, "bindUserService 调用失败：${e.javaClass.simpleName} ${e.message}")
-                        awaiting = null
+                        awaitingList -= cb
                         if (cont.isActive) cont.resume(null)
                     }
             }

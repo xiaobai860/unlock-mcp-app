@@ -8,7 +8,9 @@ import android.view.WindowManager
 import com.unlockguard.mcp.core.ShizukuGate
 import com.unlockguard.mcp.domain.UnlockChannel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * 主解锁通道：Shizuku。
@@ -72,7 +74,9 @@ class ShizukuChannel(private val context: Context) {
                 return@withContext finish(false, "主通道不可用：UserService 未就绪")
             }
 
-        val backend = runCatching { svc.probe() }.getOrDefault("none")
+        // 后端探测带超时：Binder 无内建超时，transact 卡死无法被协程中断，
+        // 但 withTimeoutOrNull 能让「调用方」及时超时返回，避免占死 Ktor 工作线程。
+        val backend = withTimeoutOrNull(3000) { svc.probe() } ?: "none"
         steps += UnlockStep("绑定时注入服务", backend != "none", "注入后端：$backend")
         if (backend == "none") {
             return@withContext finish(false, "主通道不可用：无可用注入后端")
@@ -84,22 +88,22 @@ class ShizukuChannel(private val context: Context) {
         // 1. 唤醒屏幕（SLEEP/POWER 是 toggle，必须用 WAKEUP 避免"唤醒时反而熄灭"）
         val woke = svc.injectKey(KeyEvent.KEYCODE_WAKEUP)
         steps += UnlockStep("唤醒屏幕", woke, "KEYCODE_WAKEUP(224)")
-        Thread.sleep(280)
+        delay(280)
 
         // 2. 上滑呼出 PIN 键盘
         val swiped = svc.injectSwipe(cx, h * 0.82f, cx, h * 0.20f, 180)
         steps += UnlockStep("上滑呼出密码界面", swiped, "垂直上滑")
-        Thread.sleep(420)
+        delay(420)
 
         // 3. 逐位输入 PIN
         val typed = svc.injectDigits(pin, 70)
         steps += UnlockStep("输入 PIN", typed, "${pin.length} 位数字")
-        Thread.sleep(220)
+        delay(220)
 
         // 4. 确认（部分 ROM 在 PIN 长度匹配时自动提交，此步为兼容手动确认的 ROM）
         val confirmed = svc.injectKey(KeyEvent.KEYCODE_ENTER)
         steps += UnlockStep("提交解锁", confirmed, "KEYCODE_ENTER(66)")
-        Thread.sleep(320)
+        delay(320)
 
         val injected = woke && swiped && typed && confirmed
         InjectReport(

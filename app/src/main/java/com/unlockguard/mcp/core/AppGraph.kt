@@ -1,6 +1,7 @@
 package com.unlockguard.mcp.core
 
 import android.content.Context
+import android.util.Log
 import com.unlockguard.mcp.domain.AuditLog
 import com.unlockguard.mcp.domain.LeaseManager
 import com.unlockguard.mcp.domain.PinStore
@@ -94,24 +95,30 @@ class AppGraph(private val app: Context) {
 
     fun startServer() {
         if (server != null) return
-        val host = if (_lanOn.value) "0.0.0.0" else "127.0.0.1"
-        val ctx = McpContext(
-            appContext = app,
-            token = _token.value,
-            version = "1.0",
-            port = port,
-            bindHost = host,
-            isLan = _lanOn.value,
-            pinStore = pinStore,
-            leaseManager = leaseManager,
-            audit = audit,
-            unlockEngine = unlockEngine,
-            rateLimiters = rateLimiters,
-        )
-        server = McpServer(ctx).also { it.start() }
-        _serviceOn.value = true
-        _startedAtMs = android.os.SystemClock.elapsedRealtime()
-        refreshAddresses()
+        runCatching {
+            val host = if (_lanOn.value) "0.0.0.0" else "127.0.0.1"
+            val ctx = McpContext(
+                appContext = app,
+                token = _token.value,
+                version = "1.0",
+                port = port,
+                bindHost = host,
+                isLan = _lanOn.value,
+                pinStore = pinStore,
+                leaseManager = leaseManager,
+                audit = audit,
+                unlockEngine = unlockEngine,
+                rateLimiters = rateLimiters,
+            )
+            server = McpServer(ctx).also { it.start() }
+            _serviceOn.value = true
+            _startedAtMs = android.os.SystemClock.elapsedRealtime()
+            refreshAddresses()
+        }.onFailure { e ->
+            Log.e("AppGraph", "startServer 失败（端口可能被占用），服务将保持前台但无法响应请求", e)
+            server = null
+            _serviceOn.value = false
+        }
     }
 
     fun stopServer() {
