@@ -9,6 +9,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import rikka.shizuku.Shizuku
+import rikka.shizuku.ShizukuProvider
 
 class MainApplication : Application() {
 
@@ -20,8 +21,14 @@ class MainApplication : Application() {
         graph = AppGraph(this)
         // 持有 WRITE_SECURE_SETTINGS 时，应用启动即尝试把无障碍服务写回系统启用列表（与开机自启互补）
         CoroutineScope(Dispatchers.IO).launch { AccessibilityKeeper.ensureEnabled(applicationContext) }
-        // 尝试绑定 Shizuku（其 App 运行时可用；权限授予由 Shizuku 自身 UI 完成）
-        runCatching { Shizuku.pingBinder() }
+        // 冷启动即把 Shizuku binder 拉到本进程：
+        // Shizuku 的「授权」是按 uid 存在 Shizuku 管理器里的，但本进程要读授权
+        // （Shizuku.pingBinder()/checkSelfPermission()）必须先拿到 binder。provider 进程**不会**在
+        // 「更新 / 重启后的全新进程」里自动派发 binder，必须显式 requestBinderForNonProviderProcess
+        // 触发管理器回推；否则 ping() 长期为 false、UI 永远显示「未授权」，而管理器仍显示已授权
+        // （uid 没变）—— 这正是「更新后 Shizuku 显示已授权、App 内却未授权」的根因。
+        // 点「去授权」会顺带 requestBinder，所以首次手动授权正常；但更新/重启这种「无人点授权」路径就暴露了。
+        runCatching { ShizukuProvider.requestBinderForNonProviderProcess(applicationContext) }
         // binder 送达 / 断开留痕：Shizuku 的 binder 是异步送达的，多进程与冷启动场景下
         // pingBinder() 短期为 false 属正常现象。有这两条日志才能把「服务没起」
         // 与「只是还没连上」区分开，而不是把用户误送去 Shizuku 的服务教程页。
