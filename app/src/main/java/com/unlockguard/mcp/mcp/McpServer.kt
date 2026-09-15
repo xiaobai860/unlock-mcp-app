@@ -104,7 +104,23 @@ class McpServer(private val ctx: McpContext) {
             respondJson(HttpStatusCode.BadRequest, RpcResponse(error = RpcError(-32700, "Parse error")))
             return
         }
-        val sid = request.headers["Mcp-Session-Id"] ?: newSession()
+        // JSON-RPC 通知（无 id）不得返回响应体；静默接受（含 notifications/initialized）
+        if (req.id == null) {
+            respondText("", status = HttpStatusCode.Accepted)
+            return
+        }
+
+        // 会话校验：带 Mcp-Session-Id 但服务端未记录（且非 initialize）→ 拒绝，避免伪造 sid 越权
+        val headerSid = request.headers["Mcp-Session-Id"]
+        val sid = if (headerSid.isNullOrBlank()) {
+            newSession()
+        } else if (sessions.containsKey(headerSid) || req.method == "initialize") {
+            headerSid
+        } else {
+            respondJson(HttpStatusCode.NotFound,
+                RpcResponse(id = req.id, error = RpcError(-32002, "Invalid or expired session")))
+            return
+        }
 
         val rl = ctx.rateLimiters.getOrPut(ctx.token) { com.unlockguard.mcp.domain.RateLimiter() }
         if (!rl.tryRequest()) {
@@ -126,10 +142,9 @@ class McpServer(private val ctx: McpContext) {
 
     // ---------- GET /mcp (SSE) ----------
     private suspend fun ApplicationCall.handleGet() {
-        val sid = request.headers["Mcp-Session-Id"] ?: newSession()
-        response.headers.append("Content-Type", "text/event-stream")
-        respondText("retry: 5000\n\nevent: endpoint\ndata: /mcp?sessionId=$sid\n\n",
-            ContentType.parse("text/event-stream"))
+        // Streamable HTTP（2024-11-05）中 GET /mcp 是「服务端→客户端」可选的推送通道；
+        // 本服务不主动推送，按规范返回 405，不再下发旧的 event: endpoint 协商事件。
+        respondText("", status = HttpStatusCode.MethodNotAllowed)
     }
 
     // ---------- tools/call ----------
@@ -139,11 +154,17 @@ class McpServer(private val ctx: McpContext) {
         if (name == null) return RpcResponse(id = req.id, error = RpcError(-32602, "missing tool name"))
         val args = params["arguments"]?.jsonObject ?: JsonObject(emptyMap())
         val sourceIp = "127.0.0.1" // 真实来源见接入层；本机服务以本地优先
-        val env = Tools.dispatch(ctx, name, args, sourceIp)
+        // 参数类型错误 / 业务异常若冒泡会导致 500 裸文本；在此统一兜成结构化错误
+        val env = runCatching { Tools.dispatch(ctx, name, args, sourceIp) }.getOrElse { e ->
+            Log.w(TAG, "tools/call 执行异常: $name", e)
+            ToolEnvelope(false, null, McpError(
+                ErrorCodes.INVALID_PARAMS, "调用失败：${e.message}", "请检查参数类型（整数类字段勿传字符串）"))
+        }
 
         val content = buildJsonObject {
             put("type", JsonPrimitive("text"))
-            put("text", json.encodeToJsonElement(env))
+            // MCP 规范要求 TextContent.text 必须是 string：结构化结果先序列化为字符串
+            put("text", JsonPrimitive(json.encodeToString(env)))
         }
         val result = buildJsonObject {
             putJsonArray("content") { add(content) }
@@ -191,7 +212,7 @@ class McpServer(private val ctx: McpContext) {
                     ),
                 )
                 add(toolDef("set_screen_timeout", "设置熄屏与锁屏宽限时间", mapOf("screen_off_ms" to "integer", "lock_after_ms" to "integer")))
-                add(toolDef("restore_settings", "还原系统设置快照", emptyMap()))
+                add(toolDef("restore_settings", "还原系统设置快照（会释放当前租约）", emptyMap()))
                 add(toolDef("grant_debug_auth", "上报无线调试授权状态与引导", emptyMap()))
             }
         }
@@ -200,10 +221,20 @@ class McpServer(private val ctx: McpContext) {
     private fun toolDef(name: String, desc: String, props: Map<String, String>): JsonObject = buildJsonObject {
         put("name", JsonPrimitive(name))
         put("description", JsonPrimitive(desc))
+        // 工具级注解：帮助客户端做权限 / 确认策略（只读 vs 有副作用）
+        putJsonObject("annotations") {
+            when (name) {
+                "get_phone_state", "grant_debug_auth" -> put("readOnlyHint", JsonPrimitive(true))
+                else -> put("destructiveHint", JsonPrimitive(true))
+            }
+            if (name == "release_lease") put("idempotentHint", JsonPrimitive(true))
+        }
         put("inputSchema", buildJsonObject {
             put("type", JsonPrimitive("object"))
+            putJsonArray("required") {} // 当前所有参数均有默认值，无强制必填
+            put("additionalProperties", JsonPrimitive(false))
             putJsonObject("properties") {
-                props.forEach { (k, v) -> putJsonObject(k) { put("type", JsonPrimitive(v)) } }
+                props.forEach { (k, v) -> putJsonObject(k) { put("type", JsonPrimitive(v)); put("description", JsonPrimitive(k)) } }
             }
         })
     }

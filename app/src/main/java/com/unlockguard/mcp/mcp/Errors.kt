@@ -21,6 +21,7 @@ object ErrorCodes {
     const val PERMISSION_MISSING = "PERMISSION_MISSING"
     const val TOKEN_INVALID = "TOKEN_INVALID"
     const val RATE_LIMITED = "RATE_LIMITED"
+    const val INVALID_PARAMS = "INVALID_PARAMS"
 }
 
 /** MCP 工具统一返回结构：{ ok, data?, error? } */

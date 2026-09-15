@@ -25,7 +25,16 @@ object Tools {
                 val ttl = args["ttl_seconds"]?.jsonPrimitive?.int ?: LeaseManager.DEFAULT_TTL
                 unlockPhone(ctx, ttl, sourceIp)
             }
-            "release_lease" -> releaseLease(ctx, args["lease_id"]?.jsonPrimitive?.content ?: "")
+            "release_lease" -> {
+                val id = args["lease_id"]?.jsonPrimitive?.content
+                if (id.isNullOrBlank()) {
+                    val ok = ctx.leaseManager.releaseCurrent()
+                    ctx.audit.record("local", "release_lease", "current", ok, if (ok) null else ErrorCodes.LEASE_CONFLICT)
+                    ToolEnvelope(true, buildJsonObject { put("released", JsonPrimitive(ok)) })
+                } else {
+                    releaseLease(ctx, id)
+                }
+            }
             "lock_phone" -> lockPhone(ctx, sourceIp)
             "set_screen_timeout" -> {
                 val off = args["screen_off_ms"]?.jsonPrimitive?.int ?: 60_000

@@ -92,6 +92,14 @@ class LeaseManager(private val context: Context) {
         }
     }
 
+    /** 释放当前存在的租约（无论是否过期）。供 release_lease 不带 lease_id 时默认释放「当前租约」。 */
+    fun releaseCurrent(): Boolean {
+        synchronized(lock) {
+            val a = active ?: return false
+            return release(a.leaseId)
+        }
+    }
+
     /** restore_settings 工具：还原系统设置快照（若存在） */
     fun restoreSettingsNow(): Boolean {
         synchronized(lock) {
