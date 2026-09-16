@@ -14,12 +14,12 @@
     AGP 9.4.0（2026-09-03 发布，当前最新稳定版）需 Studio 2026.2（AI-262）及以上；
     9.5.0 目前**只有 alpha05，尚无稳定版**。要升 AGP 请先升 Studio。
 - **字体：全部使用系统字体族，零字体资源依赖**（`FontFamily.SansSerif` / `FontFamily.Monospace`），无需手工放置任何 ttf，开箱即用
-- MCP 传输：Streamable HTTP（Ktor CIO **3.x**）
+- MCP 协议层：**官方 Kotlin SDK `io.modelcontextprotocol:kotlin-sdk-server` 0.15.0**（2025-era 协议，含 `initialize` 握手与版本协商；传输为 Streamable HTTP，Ktor CIO **3.5.2**）。自研协议层已移除，JSON-RPC/握手/能力协商/错误码/SSE 全部由 SDK 处理。
   - Ktor 3 与 2.x 为破坏性升级（底层改用 kotlinx-io）。本项目仅用
     `embeddedServer(CIO)` / `routing` / `receiveText` / `respondText` 等稳定 API；
     注意 Ktor 3 起 `EmbeddedServer` **不再实现 `ApplicationEngine`**，持有引擎需按
     `EmbeddedServer<CIOApplicationEngine, CIOApplicationEngine.Configuration>` 具体泛型类型声明。
-- 解锁双通道：**Shizuku（主）→ 无障碍（备，Keyguard PIN 输入）**
+- 解锁双通道：**Shizuku（主）→ 无障碍（备，Keyguard PIN 输入）**；锁屏三通道：**Shizuku（KEYCODE_SLEEP）→ 无障碍（GLOBAL_ACTION_LOCK_SCREEN）→ 设备管理员（lockNow，兜底且生物识别失效）**，前两者等效按电源键、保留生物识别，排在前。
   - 主通道的事件注入**跑在 Shizuku 的 UserService 进程内**（shell uid 2000 / root uid 0），
     因为 `INJECT_EVENTS` 是 `signature|privileged` 权限、按 uid 判定，应用进程无论怎样反射都拿不到；
   - 注入后端双路互备：优先反射 `InputManager.injectInputEvent`（毫秒级），失败自动退化为
@@ -41,13 +41,14 @@ app/src/main/java/com/unlockguard/mcp/
 │   ├─ LeaseManager.kt          租约（TTL+上限1800s）、设置快照/还原、全局唯一
 │   ├─ RateLimiter.kt           每分钟上限 + 连续失败5次锁定10分钟
 │   └─ AuditLog.kt              调用留痕（时间/来源IP/工具/入参/结果/错误码）+ CSV 导出
-├─ mcp/                         MCP 服务
-│   ├─ McpServer.kt             Streamable HTTP：POST/GET/DELETE /mcp + /health + 鉴权 + 会话
-│   ├─ McpContext.kt            运行上下文（注入依赖）
+├─ mcp/                         MCP 服务（协议层由官方 MCP Kotlin SDK 实现，本项目只写业务）
+│   ├─ SdkMcpServer.kt         基于 io.modelcontextprotocol:kotlin-sdk-server 的 Streamable HTTP 服务端（/mcp + /health），鉴权/限流/审计挂在 Ktor 层
+│   ├─ McpJson.kt              生产 JSON 序列化配置
 │   ├─ Tools.kt                工具实现（见下表）
+│   ├─ McpContext.kt           运行上下文（注入依赖）
 │   └─ Errors.kt               统一错误结构 + 错误码常量
 ├─ unlock/                     解锁引擎（双通道 + 降级）
-│   ├─ UnlockEngine.kt         引擎：Shizuku 优先 / 无障碍兜底；通道互校；解锁验证；永不假装成功
+│   ├─ UnlockEngine.kt         引擎：Shizuku 优先 / 无障碍备 / 设备管理员兜底；通道互校；解锁验证；永不假装成功
 │   ├─ ShizukuChannel.kt       主通道：经 UserService 跨进程注入（唤醒/上滑/输入PIN/确认）
 │   ├─ ShizukuUserServiceHub.kt  UserService 绑定与持有（一次绑定、长期复用）
 │   ├─ IUnlockUserService.kt   UserService 跨进程接口（手写 Binder 协议，不依赖 AIDL 工具链）
@@ -87,16 +88,18 @@ app/src/main/java/com/unlockguard/mcp/
 ## 三、MCP 工具 ↔ 方案文档对应
 | 工具 | 入参 | 实现 |
 |---|---|---|
-| `get_phone_state` | — | 屏幕/锁屏/Shizuku/无障碍/租约/锁定态如实上报 |
+| `get_phone_state` | — | 屏幕/锁屏/三通道/显示设置(亮度·息屏·锁屏宽限)/租约/安全锁定/能力前提 如实上报 |
 | `unlock_phone` | `ttl_seconds` | 双通道解锁 + 带 TTL 租约（上限 1800s，超额截断） |
 | `release_lease` | `lease_id` | 显式释放并还原设置快照 |
-| `lock_phone` | — | DeviceAdmin `lockNow()` + Shizuku `keyevent 223`(SLEEP) |
+| `lock_phone` | — | Shizuku 注入 SLEEP → 无障碍 GLOBAL_ACTION_LOCK_SCREEN → 设备管理员 lockNow()（兜底，生物识别失效） |
 | `set_screen_timeout` | `screen_off_ms`/`lock_after_ms` | 两个旋钮（需 WRITE_SETTINGS） |
 | `restore_settings` | — | 还原快照 |
 | `grant_debug_auth` | — | 仅状态上报 + 引导 |
+| `set_screen_brightness` | `level`/`auto` | 调亮度（需 Shizuku；0–255；auto=false 关自动亮度） |
+| `run_adb_command` | `command`/`timeout_ms` | 以 adb shell 权限执行命令（需 Shizuku；强制超时+输出截断+破坏性命令黑名单拦截） |
 | `/health` | — | 免 Token 低敏检查（区分服务挂 vs Token 错） |
 
-错误码：`SHIZUKU_UNAVAILABLE` / `ACCESSIBILITY_DISABLED` / `PIN_MISMATCH` / `LOCKED_OUT` / `LEASE_CONFLICT` / `PERMISSION_MISSING` / `RATE_LIMITED` 等，与 UI 引导对话框一致。
+错误码：`SHIZUKU_UNAVAILABLE` / `ACCESSIBILITY_DISABLED` / `PIN_MISMATCH` / `LOCKED_OUT` / `LEASE_CONFLICT` / `PERMISSION_MISSING` / `RATE_LIMITED` / `INVALID_PARAMS` / `COMMAND_FAILED` / `COMMAND_BLOCKED` 等，与 UI 引导对话框一致。
 
 ## 四、电脑端接入
 ```json
