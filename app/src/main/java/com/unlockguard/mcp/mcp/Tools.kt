@@ -1,8 +1,10 @@
 package com.unlockguard.mcp.mcp
 
 import android.provider.Settings
+import com.unlockguard.mcp.device.ScreenLockAdmin
 import com.unlockguard.mcp.domain.AcquireResult
 import com.unlockguard.mcp.domain.LeaseManager
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -18,6 +20,12 @@ import com.unlockguard.mcp.unlock.UnlockResult
  * 见方案文档「三、MCP 工具清单」与「3.5 统一返回结构与错误码」。
  */
 object Tools {
+
+    /**
+     * 连续解锁失败阈值（达上限即暂停自动解锁 10 分钟）。
+     * 与 RateLimiter 默认值、UI 展示保持一致；此处仅用于 get_phone_state 如实回读。
+     */
+    private const val FAIL_THRESHOLD = 5
 
     /** 各工具接受的参数名白名单（服务端强制 inputSchema，F1） */
     private val TOOL_ARGS: Map<String, Set<String>> = mapOf(
@@ -82,14 +90,62 @@ object Tools {
         }
     }
 
+    /**
+     * 读取一条系统设置。
+     *
+     * 两级策略：
+     * 1. 优先用 Android API（快、无依赖）—— 读 `Settings.System/Secure` 对普通应用是开放的；
+     * 2. 读不到时（ROM 限制、键不存在），若 Shizuku 可用则以 shell 身份再读一次。
+     *
+     * 第 2 步是必要的：写工具（`set_screen_timeout` / `set_screen_brightness`）走的是
+     * shell 通道，读也走同一通道时，核对结果才可信。
+     */
+    private suspend fun readSetting(ctx: McpContext, ns: String, key: String): String? {
+        val viaApi = runCatching {
+            when (ns) {
+                "system" -> Settings.System.getString(ctx.appContext.contentResolver, key)
+                "secure" -> Settings.Secure.getString(ctx.appContext.contentResolver, key)
+                else -> null
+            }
+        }.getOrNull()
+        if (!viaApi.isNullOrBlank()) return viaApi.trim()
+
+        if (!ctx.unlockEngine.isShizukuAvailable()) return null
+        val r = ctx.unlockEngine.runShell("settings get $ns $key", 5_000)
+        val out = r.stdout.trim()
+        // `settings get` 对不存在的键输出字面量 "null"
+        return out.takeIf { r.succeeded && it.isNotBlank() && it != "null" }
+    }
+
     private suspend fun getPhoneState(ctx: McpContext, sourceIp: String): ToolEnvelope {
         val a = ctx.unlockEngine.availability()
+
+        // 回读「所有 MCP 可写能力」的当前值：调用方据此核对 set_* 是否真的生效
+        val brightness = readSetting(ctx, "system", Settings.System.SCREEN_BRIGHTNESS)?.toIntOrNull()
+        val brightnessMode = readSetting(ctx, "system", Settings.System.SCREEN_BRIGHTNESS_MODE)?.toIntOrNull()
+        val screenOffMs = readSetting(ctx, "system", Settings.System.SCREEN_OFF_TIMEOUT)?.toIntOrNull()
+        val lockAfterMs = readSetting(ctx, "secure", LeaseManager.SECURE_LOCK_AFTER_TIMEOUT)?.toIntOrNull()
+
         val data = buildJsonObject {
             put("screen_on", JsonPrimitive(ctx.unlockEngine.isScreenOn()))
             put("locked", JsonPrimitive(ctx.unlockEngine.isScreenLocked()))
             putJsonObject("channels") {
                 put("shizuku", JsonPrimitive(a.shizuku))
                 put("accessibility", JsonPrimitive(a.accessibility))
+                // 设备管理员是 lock_phone 的第三级兜底，能否用直接决定锁屏会不会失败
+                put("device_admin", JsonPrimitive(ScreenLockAdmin.isActive(ctx.appContext)))
+            }
+            putJsonObject("display") {
+                put("brightness", brightness?.let { JsonPrimitive(it) } ?: JsonNull)
+                put("brightness_mode", JsonPrimitive(
+                    when (brightnessMode) {
+                        Settings.System.SCREEN_BRIGHTNESS_MODE_AUTOMATIC -> "auto"
+                        Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL -> "manual"
+                        else -> "unknown"
+                    },
+                ))
+                put("screen_off_timeout_ms", screenOffMs?.let { JsonPrimitive(it) } ?: JsonNull)
+                put("lock_after_timeout_ms", lockAfterMs?.let { JsonPrimitive(it) } ?: JsonNull)
             }
             val lease = ctx.leaseManager.info()
             if (lease != null) {
@@ -102,7 +158,20 @@ object Tools {
             } else {
                 put("lease", JsonPrimitive(null as String?))
             }
+            putJsonObject("security") {
+                put("locked_out", JsonPrimitive(ctx.unlockEngine.isLockedOut()))
+                put("locked_out_remaining_sec", JsonPrimitive(ctx.unlockEngine.lockedOutRemainingSec()))
+                put("failure_count", JsonPrimitive(ctx.unlockEngine.failureCount()))
+                put("fail_threshold", JsonPrimitive(FAIL_THRESHOLD))
+            }
+            // 兼容旧字段：保留顶层 locked_out
             put("locked_out", JsonPrimitive(ctx.unlockEngine.isLockedOut()))
+            putJsonObject("capabilities") {
+                // unlock_phone 的前提：没设 PIN 则必然失败
+                put("pin_set", JsonPrimitive(ctx.pinStore.hasPin()))
+                // set_screen_timeout 的前提：缺 WRITE_SETTINGS 会返回 PERMISSION_MISSING
+                put("can_write_settings", JsonPrimitive(Settings.System.canWrite(ctx.appContext)))
+            }
             put("server_start_error", JsonPrimitive(ctx.lastStartError ?: ""))
         }
         ctx.audit.record(sourceIp, "get_phone_state", "-", true, null)
@@ -199,10 +268,37 @@ object Tools {
         }
         runCatching {
             Settings.System.putInt(c.contentResolver, Settings.System.SCREEN_OFF_TIMEOUT, screenOffMs)
+        }
+        // 锁屏宽限位于 Settings.Secure，写入需要 WRITE_SECURE_SETTINGS（adb 级），
+        // 普通应用通常没有 —— 失败属常态，**不能因此谎报整体成功**，故分开记录
+        runCatching {
             Settings.Secure.putInt(c.contentResolver, LeaseManager.SECURE_LOCK_AFTER_TIMEOUT, lockAfterMs)
         }
-        val data = buildJsonObject { put("applied", JsonPrimitive(true)) }
-        ctx.audit.record("local", "set_screen_timeout", "off=$screenOffMs,after=$lockAfterMs", true, null)
+
+        // 回读核对：putInt 不抛异常 ≠ 值真的落盘了（ROM 可能拦截或静默丢弃）
+        val actualOff = readSetting(ctx, "system", Settings.System.SCREEN_OFF_TIMEOUT)?.toIntOrNull()
+        val actualLock = readSetting(ctx, "secure", LeaseManager.SECURE_LOCK_AFTER_TIMEOUT)?.toIntOrNull()
+        val offApplied = actualOff == screenOffMs
+        val lockApplied = actualLock == lockAfterMs
+
+        val data = buildJsonObject {
+            put("applied", JsonPrimitive(offApplied && lockApplied))
+            put("screen_off_timeout_ms", actualOff?.let { JsonPrimitive(it) } ?: JsonNull)
+            put("screen_off_applied", JsonPrimitive(offApplied))
+            put("lock_after_timeout_ms", actualLock?.let { JsonPrimitive(it) } ?: JsonNull)
+            put("lock_after_applied", JsonPrimitive(lockApplied))
+        }
+        ctx.audit.record(
+            "local", "set_screen_timeout", "off=$screenOffMs,after=$lockAfterMs", offApplied,
+            if (offApplied) null else ErrorCodes.PERMISSION_MISSING,
+        )
+        if (!offApplied) {
+            return ToolEnvelope(false, data, McpError(
+                ErrorCodes.PERMISSION_MISSING,
+                "灭屏超时未生效（回读 $actualOff ≠ 期望 $screenOffMs）",
+                "请确认已授予「修改系统设置」权限",
+            ))
+        }
         return ToolEnvelope(true, data)
     }
 
@@ -259,6 +355,9 @@ object Tools {
             ToolEnvelope(true, buildJsonObject {
                 put("level", JsonPrimitive(level))
                 put("auto", JsonPrimitive(auto))
+                // 回读核对结果：note 为空即回读值与写入值一致
+                put("verified", JsonPrimitive(r.note.isBlank()))
+                if (r.note.isNotBlank()) put("note", JsonPrimitive(r.note))
             })
         } else {
             ToolEnvelope(false, null, McpError(

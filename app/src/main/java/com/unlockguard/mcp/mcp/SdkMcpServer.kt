@@ -163,12 +163,22 @@ class SdkMcpServer(private val ctx: McpContext) {
                 "操作失败后定位原因：是哪条通道不可用、是否已被安全锁定、服务端是否报错",
                 "周期性巡检设备是否在线、MCP 服务是否正常",
             ),
-            returns = "data 含：screen_on(是否亮屏)、locked(是否锁屏)、channels.shizuku 与 channels.accessibility(两通道是否可用)、" +
-                "lease{lease_id, remaining_sec, holder, channel_used}(无活跃租约时为 null)、locked_out(是否已被安全锁定)、" +
-                "server_start_error(服务启动错误，空字符串表示服务正常)。",
+            returns = "data 含：\n" +
+                "1) screen_on(是否亮屏)、locked(是否锁屏)；\n" +
+                "2) channels{shizuku, accessibility, device_admin}：三条通道是否可用（device_admin 是 lock_phone 的兜底）；\n" +
+                "3) display{brightness(0–255，读不到为 null), brightness_mode(auto=自动/manual=手动/unknown), " +
+                "screen_off_timeout_ms(灭屏超时), lock_after_timeout_ms(锁屏宽限)}：这是所有显示类设置的当前值；\n" +
+                "4) lease{lease_id, remaining_sec, holder, channel_used}：无活跃租约时为 null；\n" +
+                "5) security{locked_out, locked_out_remaining_sec, failure_count, fail_threshold}：安全锁定状态；\n" +
+                "6) capabilities{pin_set(是否已设 PIN，unlock_phone 的前提), can_write_settings(是否有「修改系统设置」权限，" +
+                "set_screen_timeout 的前提)}；\n" +
+                "7) locked_out(顶层，兼容旧字段)、server_start_error(服务启动错误，空字符串表示正常)。",
             notes = listOf(
                 "完全只读、可放心高频调用，不会解锁、不会改变任何设置",
-                "这是排查一切问题的第一步：结果不符合预期时先调它",
+                "这是排查一切问题的第一步：执行任何写操作后，再调一次即可核对是否真的生效（例如 set_screen_brightness 后看 display.brightness）",
+                "**自动亮度下 brightness 的语义**：brightness_mode=auto 时，系统按环境光实时计算亮度，" +
+                    "Settings 里的 brightness 只是「切回手动档时使用的基准值」，不代表当前屏幕实际亮度",
+                "display 里读不到的项为 null（多因 ROM 限制；此时若有 Shizuku 授权会自动改用 shell 再读一次）",
             ),
         ),
         ToolSpec(
@@ -262,10 +272,14 @@ class SdkMcpServer(private val ctx: McpContext) {
                     example = JsonPrimitive(5000),
                 ),
             ),
-            returns = "成功时 data 含 applied=true。",
+            returns = "成功时 data 含：applied(两项都生效才为 true)、screen_off_timeout_ms 与 screen_off_applied(灭屏超时的回读值与是否生效)、" +
+                "lock_after_timeout_ms 与 lock_after_applied(锁屏宽限的回读值与是否生效)。写入后会**回读核对**，以回读值为准。",
             notes = listOf(
                 "需要系统「修改系统设置」(WRITE_SETTINGS) 权限，缺失时返回 PERMISSION_MISSING",
+                "**锁屏宽限(lock_after_ms)位于 Settings.Secure，写入需 WRITE_SECURE_SETTINGS（adb 级）权限，普通应用通常没有**，" +
+                    "因此该项常出现 lock_after_applied=false —— 这是权限限制而非故障，请勿据此判定整体失败",
                 "与 unlock_phone 的临时保活不同：此修改**不会自动还原**，需自行改回或调用 restore_settings",
+                "想确认最终生效值，可再调一次 get_phone_state 查看 display.screen_off_timeout_ms",
             ),
         ),
         ToolSpec(
@@ -316,10 +330,12 @@ class SdkMcpServer(private val ctx: McpContext) {
                     example = JsonPrimitive(false),
                 ),
             ),
-            returns = "成功时 data 含 level(实际写入的亮度值) 与 auto(当前是否为自动亮度)。",
+            returns = "成功时 data 含：level(写入的亮度值)、auto(当前是否为自动亮度)、verified(回读核对是否与写入值一致)、" +
+                "note(verified=false 时的原因说明)。",
             notes = listOf(
                 "**必须 Shizuku 授权**，未授权时返回 SHIZUKU_UNAVAILABLE",
                 "自动亮度开启时系统会持续改写亮度值、覆盖手动设置；因此 auto=false 时会同时关闭自动亮度，否则设置会被覆盖",
+                "写入后会回读核对：verified=false 表示命令已执行但回读值不符（多为 ROM 拦截），此时以 get_phone_state 读到的实际值为准",
             ),
         ),
         ToolSpec(

@@ -201,10 +201,19 @@ class ShizukuChannel(private val context: Context) {
      */
     suspend fun setBrightness(level: Int, auto: Boolean): ShellResult {
         val mode = if (auto) 1 else 0
-        return exec(
+        val r = exec(
             "settings put system screen_brightness $level && settings put system screen_brightness_mode $mode",
             timeoutMs = 8_000,
         )
+        if (!r.succeeded) return r
+        // 回读核对：退出码为 0 只代表命令跑了，不代表值真的落盘（ROM 可能拦截 settings put）
+        val actual = exec("settings get system screen_brightness", timeoutMs = 5_000)
+            .stdout.trim().toIntOrNull()
+        return when {
+            actual == null -> r.copy(note = "已下发但回读失败，无法确认是否生效")
+            actual != level -> r.copy(note = "回读亮度为 $actual，与写入值 $level 不一致")
+            else -> r
+        }
     }
 
     /** 解析服务端返回的 JSON（{ exitCode, stdout, stderr, timedOut, error }） */
